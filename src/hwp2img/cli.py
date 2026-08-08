@@ -38,9 +38,19 @@ def main(argv: list[str]) -> int:
             _show_error(exc.user_message)
             return 1
         except Exception as exc:
-            _show_error(f"예상하지 못한 문제가 생겼어요.\n\n{exc}")
+            log_path = _log_error(exc)
+            _show_error(f"예상하지 못한 문제가 생겼어요.\n\n자세한 내용은 이 파일에 저장했어요:\n{log_path}")
             return 1
     return 0
+
+
+def _log_error(exc: Exception) -> str:
+    import traceback
+
+    log_path = os.path.join(os.path.expanduser("~"), "Desktop", "hwp2img_오류.log")
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(traceback.format_exc() + "\n")
+    return log_path
 
 
 def _show_error(message: str) -> None:

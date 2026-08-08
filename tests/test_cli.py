@@ -1,3 +1,5 @@
+import os
+
 import pymupdf
 import pytest
 from PIL import Image
@@ -83,3 +85,31 @@ def test_main_shows_user_message_on_hwp2img_error(monkeypatch):
 
     assert result == 1
     assert messages == ["한글 문서 파일(.hwp, .hwpx)만 변환할 수 있어요."]
+
+
+def test_main_logs_traceback_and_hides_raw_exception_on_unexpected_error(monkeypatch, tmp_path):
+    fake_home = tmp_path / "fake_home"
+    (fake_home / "Desktop").mkdir(parents=True)
+    monkeypatch.setattr(os.path, "expanduser", lambda p: str(fake_home))
+
+    messages = []
+    monkeypatch.setattr(cli, "_show_error", lambda msg: messages.append(msg))
+
+    raw_detail = "0x80040154 CoCreateInstance failed: 클래스가 등록되어 있지 않습니다"
+
+    def failing_process_file(*args, **kwargs):
+        raise RuntimeError(raw_detail)
+
+    monkeypatch.setattr(cli, "process_file", failing_process_file)
+
+    result = cli.main(["whatever.hwp"])
+
+    assert result == 1
+
+    log_path = fake_home / "Desktop" / "hwp2img_오류.log"
+    assert log_path.exists()
+    assert raw_detail in log_path.read_text(encoding="utf-8")
+
+    assert len(messages) == 1
+    assert raw_detail not in messages[0]
+    assert str(log_path) in messages[0]
