@@ -1,4 +1,5 @@
 import io
+import ntpath
 import os
 import subprocess
 from pathlib import Path
@@ -33,5 +34,15 @@ def copy_to_clipboard(image: Image.Image, clipboard_module=None) -> None:
         clipboard_module.CloseClipboard()
 
 
-def open_in_explorer(path: str, runner=subprocess.run) -> None:
-    runner(["explorer", f"/select,{path}"])
+def open_in_explorer(path: str, runner=None) -> None:
+    """변환된 파일을 선택한 상태로 탐색기를 연다.
+
+    리스트 형태로 넘기면 subprocess 의 list2cmdline 이 `/select` 까지 통째로 인용해버려
+    공백 든 파일명에서 동작하지 않는다(둘 다 실측). 문자열 형태여야 Windows 가
+    CreateProcess 로 그대로 전달한다. Windows 파일명에는 `"` 를 쓸 수 없어서
+    경로를 인용해도 안전하다.
+    """
+    if runner is None:
+        runner = subprocess.run
+
+    runner(f'explorer /select,"{ntpath.normpath(path)}"')
