@@ -5,9 +5,22 @@ from hwp2img.errors import HwpAutomationError, HwpNotInstalledError
 
 def convert(hwp, hwp_path: str, pdf_path: str) -> None:
     try:
-        if not hwp.open(hwp_path):
+        # open()/save_as() 는 실패를 bool False 로도, 예외로도 알릴 수 있다(암호 걸린 문서,
+        # 파일 잠김, 권한 등은 COM 이 예외를 던진다) — 둘 다 같은 HwpAutomationError 로 모아야
+        # main() 의 일반 캐치올("예상하지 못한 문제가...")이 아니라 이미 있는 구체적인
+        # 한국어 안내로 간다.
+        try:
+            opened = hwp.open(hwp_path)
+        except Exception as exc:
+            raise HwpAutomationError(f"open() raised for {hwp_path}: {exc}") from exc
+        if not opened:
             raise HwpAutomationError(f"failed to open {hwp_path}")
-        if not hwp.save_as(pdf_path, format="PDF"):
+
+        try:
+            saved = hwp.save_as(pdf_path, format="PDF")
+        except Exception as exc:
+            raise HwpAutomationError(f"save_as() raised for {pdf_path}: {exc}") from exc
+        if not saved:
             raise HwpAutomationError(f"failed to save {pdf_path} as PDF")
     finally:
         # quit 실패가 진짜 원인(open/save 실패)을 덮어써서 원인을 가리지 않게 삼킨다.

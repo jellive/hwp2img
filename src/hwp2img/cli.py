@@ -27,8 +27,10 @@ def process_file(hwp_path: str, output_dir: str, hwp_factory, dpi: int = 200) ->
         output.copy_to_clipboard(image)
     except Exception:
         # 조용히 넘어가면 어머니가 Ctrl+V 로 직전 클립보드 내용(사적인 캡처 등)을
-        # 그대로 전송할 수 있다. 저장은 이미 됐으니 폴더 경로로 안내만 한다.
-        _show_notice("사진은 저장했어요.\n\n복사가 안 돼서 붙여넣기는 안 될 거예요.\n열린 폴더에서 사진을 골라 보내주세요.")
+        # 그대로 전송할 수 있다. 저장은 이미 됐으니 안내한다 — 단, 실제 경로를 직접
+        # 적어야 한다. "열린 폴더에서"라고만 하면 바로 다음의 탐색기 오픈까지 실패했을 때
+        # 어디서도 찾을 수 없는 안내가 된다(탐색기 성공 여부와 무관하게 유효해야 함).
+        _show_notice(f"사진은 저장했어요.\n\n복사가 안 돼서 붙여넣기는 안 될 거예요.\n여기서 찾아 보내주세요:\n{out_path}")
     try:
         output.open_in_explorer(out_path)
     except Exception:

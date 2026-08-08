@@ -11,7 +11,7 @@ class UnsupportedFileError(Hwp2ImgError):
 class HwpNotInstalledError(Hwp2ImgError):
     def __init__(self, detail: str = ""):
         super().__init__(detail)
-        self.user_message = "한글 프로그램을 찾을 수 없어요. 컴퓨터에 한글이 설치되어 있는지 확인해 주세요."
+        self.user_message = "한컴오피스 한글을 찾을 수 없어요. 컴퓨터에 한글이 설치되어 있는지 확인해 주세요."
 
 
 class HwpAutomationError(Hwp2ImgError):

@@ -1,6 +1,6 @@
-PyMuPDF
-Pillow
-pytest
+PyMuPDF>=1.28.2
+Pillow>=12.3.0
+pytest>=9.1.1
 
-pyhwpx; sys_platform == "win32"
-pywin32; sys_platform == "win32"
+pyhwpx>=1.7.2; sys_platform == "win32"
+pywin32>=309; sys_platform == "win32"

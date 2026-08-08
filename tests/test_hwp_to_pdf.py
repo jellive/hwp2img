@@ -8,19 +8,33 @@ from hwp2img.hwp_to_pdf import convert, create_hwp
 
 
 class FakeHwp:
-    def __init__(self, open_result=True, save_result=True, write_file=True, quit_raises=False):
+    def __init__(
+        self,
+        open_result=True,
+        save_result=True,
+        write_file=True,
+        quit_raises=False,
+        open_raises=False,
+        save_raises=False,
+    ):
         self.calls = []
         self._open_result = open_result
         self._save_result = save_result
         self._write_file = write_file
         self._quit_raises = quit_raises
+        self._open_raises = open_raises
+        self._save_raises = save_raises
 
     def open(self, filename):
         self.calls.append(("open", filename))
+        if self._open_raises:
+            raise RuntimeError("0x80040154 암호로 보호된 문서입니다")
         return self._open_result
 
     def save_as(self, path, format="HWP"):
         self.calls.append(("save_as", path, format))
+        if self._save_raises:
+            raise RuntimeError("디스크 쓰기 실패")
         # 진짜 한글은 save_as 가 True 면 파일을 만든다. convert() 의 사후 검사가
         # 의미를 가지려면 fake 도 그 계약을 지켜야 한다.
         if self._save_result and self._write_file:
@@ -100,6 +114,28 @@ def test_convert_reports_the_real_error_when_quit_also_fails(tmp_path):
 
     with pytest.raises(HwpAutomationError):
         convert(hwp, "문서.hwp", str(tmp_path / "출력.pdf"))
+
+
+def test_convert_raises_hwp_automation_error_when_open_itself_raises(tmp_path):
+    """False 반환뿐 아니라 open() 자체가 예외를 던지는 경우도 있다 —
+    암호 걸린 문서·파일 잠김 등은 COM 이 bool 이 아니라 예외로 실패를 알린다.
+    이걸 못 잡으면 예외가 main() 의 일반 캐치올까지 새어나가 '예상하지 못한 문제'라는
+    막연한 안내로 가버린다."""
+    hwp = FakeHwp(open_raises=True)
+
+    with pytest.raises(HwpAutomationError):
+        convert(hwp, "문서.hwp", str(tmp_path / "출력.pdf"))
+
+    assert ("quit", False) in hwp.calls
+
+
+def test_convert_raises_hwp_automation_error_when_save_as_itself_raises(tmp_path):
+    hwp = FakeHwp(save_raises=True)
+
+    with pytest.raises(HwpAutomationError):
+        convert(hwp, "문서.hwp", str(tmp_path / "출력.pdf"))
+
+    assert ("quit", False) in hwp.calls
 
 
 def test_create_hwp_forces_a_fresh_hangul_instance(monkeypatch):

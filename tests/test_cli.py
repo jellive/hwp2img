@@ -119,6 +119,36 @@ def test_process_file_shows_notice_when_clipboard_copy_fails(tmp_path, monkeypat
     assert os.path.exists(out_path)
     assert len(notices) == 1
     assert "저장했어요" in notices[0]
+    assert out_path in notices[0]
+
+
+def test_process_file_notice_has_real_path_even_when_explorer_also_fails(tmp_path, monkeypatch):
+    """클립보드 실패 안내가 '열린 폴더에서'라고만 하면, 바로 다음의 탐색기 오픈까지
+    실패했을 때 아무 데도 없는 곳을 가리키는 셈이 된다. 안내 문구 자체에 실제 경로가
+    박혀 있어야 탐색기 성공 여부와 무관하게 유효하다."""
+
+    def clipboard_boom(*args, **kwargs):
+        raise RuntimeError("clipboard is held by another application")
+
+    def explorer_boom(*args, **kwargs):
+        raise RuntimeError("explorer.exe 응답 없음")
+
+    notices = []
+    monkeypatch.setattr(cli.output, "copy_to_clipboard", clipboard_boom)
+    monkeypatch.setattr(cli.output, "open_in_explorer", explorer_boom)
+    monkeypatch.setattr(cli, "_show_notice", lambda msg: notices.append(msg))
+
+    hwp_path = tmp_path / "공문.hwp"
+    hwp_path.write_text("dummy")
+    output_dir = tmp_path / "out"
+
+    out_path = cli.process_file(
+        str(hwp_path), str(output_dir), lambda: FakeHwpWritesRealPdf(page_count=1)
+    )
+
+    assert os.path.exists(out_path)
+    assert len(notices) == 1
+    assert out_path in notices[0]
 
 
 def test_main_shows_error_and_returns_1_when_no_files(monkeypatch):
