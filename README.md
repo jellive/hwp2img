@@ -31,6 +31,8 @@
 - `--collect-all pyhwpx` — pyhwpx 는 보안승인모듈 `FilePathCheckerModule.dll` 과 폰트 데이터를
   패키지 안에 들고 있는데, 이건 import 분석만으로는 잡히지 않아서 명시적으로 수집해야 한다.
   빠뜨리면 개발 PC 에서는 되고 어머니 PC 에서만 보안 팝업/실행 실패가 난다.
+  이 dll 을 레지스트리에 등록하는 건 `hwp2img/security.py` 가 직접 한다 — pyhwpx 의 자동
+  등록은 `pip` 실행에 의존해서 얼린 exe 에서 항상 실패한다(계획 문서 Task 9 참고).
 - `--name` 은 ASCII 로 둔다 — 비-ASCII 이름으로 직접 빌드하면 일부 Windows 환경에서
   PyInstaller 부트로더가 실패한 전례가 있다. 한글 이름이 필요하면 빌드한 뒤
   `dist/hwp2img.exe` 를 가리키는 바탕화면 바로가기를 "한글 사진으로 바꾸기" 로 만들어 준다

@@ -3,6 +3,7 @@ import types
 
 import pytest
 
+from hwp2img import hwp_to_pdf
 from hwp2img.errors import HwpAutomationError, HwpNotInstalledError
 from hwp2img.hwp_to_pdf import convert, create_hwp
 
@@ -155,6 +156,26 @@ def test_create_hwp_forces_a_fresh_hangul_instance(monkeypatch):
 
     assert captured["new"] is True
     assert captured["visible"] is False
+
+
+def test_create_hwp_registers_security_module_before_creating_the_instance(monkeypatch):
+    """보안승인모듈 등록은 한글 인스턴스를 만들기 전에 끝나 있어야 한다 —
+    한글이 뜬 뒤에 등록하면 그 인스턴스는 이미 미등록 상태로 초기화된 뒤다."""
+    order = []
+
+    monkeypatch.setattr(hwp_to_pdf, "ensure_security_module", lambda: order.append("register"))
+
+    class FakeHwpCom:
+        def __init__(self, **kwargs):
+            order.append("create")
+
+    fake_pyhwpx = types.ModuleType("pyhwpx")
+    fake_pyhwpx.Hwp = FakeHwpCom
+    monkeypatch.setitem(sys.modules, "pyhwpx", fake_pyhwpx)
+
+    create_hwp()
+
+    assert order == ["register", "create"]
 
 
 def test_create_hwp_raises_hwp_not_installed_when_com_creation_fails(monkeypatch):

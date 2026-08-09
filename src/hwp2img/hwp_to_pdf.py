@@ -1,6 +1,7 @@
 import os
 
 from hwp2img.errors import HwpAutomationError, HwpNotInstalledError
+from hwp2img.security import ensure_security_module
 
 
 def convert(hwp, hwp_path: str, pdf_path: str) -> None:
@@ -37,13 +38,19 @@ def convert(hwp, hwp_path: str, pdf_path: str) -> None:
 def create_hwp():
     """실제 한글 COM 객체를 생성한다.
     Windows + 한컴오피스가 있어야 동작하므로 이 함수 자체는 원격 세션에서 수동으로 검증한다
-    (계획 문서 Task 9 참고). pyhwpx 는 Hwp(register_module=True) 기본값으로 보안승인모듈을
-    자동 등록하므로 여기서 레지스트리를 직접 건드리지 않는다.
+    (계획 문서 Task 9 참고).
+
+    보안승인모듈은 우리가 먼저 등록한다. pyhwpx 도 `register_module=True` 기본값으로
+    같은 일을 하지만 그 구현이 `pip` 실행에 의존해서 얼린 exe 에서는 항상 실패한다
+    (자세한 내용은 security.py). 등록에 실패해도 변환은 그대로 시도한다 —
+    최악의 경우 한글 보안 팝업이 한 번 뜰 뿐이다.
 
     `new=True` 는 필수다 — 기본값(new=False)이면 pyhwpx 가 이미 실행 중인 한글 COM 인스턴스에
     붙어버려서, 사용자가 열어둔 문서를 우리가 숨기고(visible=False) 마지막에 quit(save=False) 로
     날려버린다. 항상 별도 프로세스를 새로 띄운다.
     """
+    ensure_security_module()
+
     try:
         from pyhwpx import Hwp
     except ImportError as exc:
