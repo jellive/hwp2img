@@ -2,7 +2,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from hwp2img import hwp_to_pdf, output, pdf_to_images, stitch
+from hwp2img import hwp_to_pdf, output, pdf_to_images, stitch, watchdog
 from hwp2img.errors import Hwp2ImgError, UnsupportedFileError
 
 SUPPORTED_EXTENSIONS = {".hwp", ".hwpx"}
@@ -43,18 +43,35 @@ def main(argv: list[str]) -> int:
         _show_error("변환할 한글 문서 파일을 이 프로그램 위로 끌어다 놓아 주세요.")
         return 1
 
-    for hwp_path in argv:
-        output_dir = os.path.dirname(os.path.abspath(hwp_path))
-        try:
-            process_file(hwp_path, output_dir, hwp_to_pdf.create_hwp)
-        except Hwp2ImgError as exc:
-            _show_error(exc.user_message)
-            return 1
-        except Exception as exc:
-            log_path = _log_error(exc)
-            _show_error(f"예상하지 못한 문제가 생겼어요.\n\n자세한 내용은 이 파일에 저장했어요:\n{log_path}")
-            return 1
+    # 여러 파일 동시 드래그(배치 처리)는 설계상 스코프 아웃이다(스펙 문서 "스코프 아웃" 절).
+    # 예전에는 argv 를 그냥 순회하다 첫 파일 실패에서 조용히 멈췄는데, 어머니가 실수로
+    # 여러 개를 집어 드롭하면 나머지가 안내도 없이 사라지는 셈이었다 — 아예 시작하지 않고
+    # 안내한다.
+    if len(argv) > 1:
+        _show_error("한 번에 한 개씩 올려주세요.")
+        return 1
+
+    hwp_path = argv[0]
+    output_dir = os.path.dirname(os.path.abspath(hwp_path))
+    try:
+        _run_conversion(hwp_path, output_dir)
+    except Hwp2ImgError as exc:
+        _show_error(exc.user_message)
+        return 1
+    except Exception as exc:
+        log_path = _log_error(exc)
+        _show_error(f"예상하지 못한 문제가 생겼어요.\n\n자세한 내용은 이 파일에 저장했어요:\n{log_path}")
+        return 1
     return 0
+
+
+def _run_conversion(hwp_path: str, output_dir: str) -> str:
+    """실제 변환 경로 — watchdog 을 거쳐 별도 프로세스에서 실행한다.
+
+    암호 걸린 문서 등으로 한글 COM 이 응답 없이 멈춰도, 이 프로세스(자식이 아니라
+    지금 이 프로세스) 는 계속 살아 있어야 어머니에게 안내창을 띄울 수 있다.
+    """
+    return watchdog.run_process_file(hwp_path, output_dir, hwp_to_pdf.create_hwp)
 
 
 def _log_error(exc: Exception) -> str:

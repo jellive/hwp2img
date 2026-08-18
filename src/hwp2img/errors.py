@@ -18,3 +18,9 @@ class HwpAutomationError(Hwp2ImgError):
     def __init__(self, detail: str = ""):
         super().__init__(detail)
         self.user_message = "한글 문서를 여는 중 문제가 생겼어요. 파일이 손상되지 않았는지 확인해 주세요."
+
+
+class HwpTimeoutError(Hwp2ImgError):
+    def __init__(self, detail: str = ""):
+        super().__init__(detail)
+        self.user_message = "이 파일은 변환할 수 없어요. 암호가 걸려 있거나 문서에 문제가 있을 수 있어요."

@@ -161,14 +161,31 @@ def test_main_shows_error_and_returns_1_when_no_files(monkeypatch):
     assert messages
 
 
+def test_main_shows_error_and_returns_1_when_multiple_files_dropped_at_once(monkeypatch):
+    """여러 파일 동시 드롭(배치 처리)은 설계상 스코프 아웃이다 — 여러 개가 오면 조용히
+    첫 파일만 처리하다 실패하는 대신, 안내하고 아무것도 건드리지 않고 끝낸다."""
+    messages = []
+    monkeypatch.setattr(cli, "_show_error", lambda msg: messages.append(msg))
+
+    conversions = []
+    monkeypatch.setattr(cli, "_run_conversion", lambda *args: conversions.append(args))
+
+    result = cli.main(["a.hwp", "b.hwp"])
+
+    assert result == 1
+    assert messages
+    assert "한 개씩" in messages[0]
+    assert conversions == []
+
+
 def test_main_shows_user_message_on_hwp2img_error(monkeypatch):
     messages = []
     monkeypatch.setattr(cli, "_show_error", lambda msg: messages.append(msg))
 
-    def failing_process_file(*args, **kwargs):
+    def failing_run_conversion(*args, **kwargs):
         raise UnsupportedFileError("bad.txt")
 
-    monkeypatch.setattr(cli, "process_file", failing_process_file)
+    monkeypatch.setattr(cli, "_run_conversion", failing_run_conversion)
 
     result = cli.main(["bad.txt"])
 
@@ -186,10 +203,10 @@ def test_main_logs_traceback_and_hides_raw_exception_on_unexpected_error(monkeyp
 
     raw_detail = "0x80040154 CoCreateInstance failed: 클래스가 등록되어 있지 않습니다"
 
-    def failing_process_file(*args, **kwargs):
+    def failing_run_conversion(*args, **kwargs):
         raise RuntimeError(raw_detail)
 
-    monkeypatch.setattr(cli, "process_file", failing_process_file)
+    monkeypatch.setattr(cli, "_run_conversion", failing_run_conversion)
 
     result = cli.main(["whatever.hwp"])
 
@@ -209,11 +226,11 @@ def test_main_uses_the_source_files_own_directory_as_output_dir(monkeypatch, tmp
     저장하면 어머니가 방금 파일을 끌어온 바로 그 폴더에 결과가 남는다."""
     captured = {}
 
-    def fake_process_file(hwp_path, output_dir, hwp_factory, dpi=200):
+    def fake_run_conversion(hwp_path, output_dir):
         captured["output_dir"] = output_dir
         return "ignored"
 
-    monkeypatch.setattr(cli, "process_file", fake_process_file)
+    monkeypatch.setattr(cli, "_run_conversion", fake_run_conversion)
 
     hwp_dir = tmp_path / "문서함"
     hwp_dir.mkdir()
@@ -273,7 +290,7 @@ def test_main_still_shows_a_message_when_logging_cannot_write_anywhere(monkeypat
 
     messages = []
     monkeypatch.setattr(cli, "_show_error", lambda msg: messages.append(msg))
-    monkeypatch.setattr(cli, "process_file", _raise_runtime_error)
+    monkeypatch.setattr(cli, "_run_conversion", _raise_runtime_error)
 
     result = cli.main(["whatever.hwp"])
 
