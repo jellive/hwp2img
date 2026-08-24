@@ -2,7 +2,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from hwp2img import hwp_to_pdf, output, pdf_to_images, stitch, watchdog
+from hwp2img import hwp_to_pdf, messages, output, pdf_to_images, stitch, watchdog
 from hwp2img.errors import Hwp2ImgError, UnsupportedFileError
 
 SUPPORTED_EXTENSIONS = {".hwp", ".hwpx"}
@@ -38,31 +38,59 @@ def process_file(hwp_path: str, output_dir: str, hwp_factory, dpi: int = 200) ->
     return out_path
 
 
-def main(argv: list[str]) -> int:
+def main(argv: list[str], launcher=None) -> int:
     if not argv:
-        _show_error("변환할 한글 문서 파일을 이 프로그램 위로 끌어다 놓아 주세요.")
-        return 1
+        # 아이콘을 더블클릭한 경우다. 예전에는 "이 프로그램 위로 끌어다 놓아 주세요"
+        # 안내창만 띄우고 끝나는 막다른 길이었다 — 이제 드롭존 창을 띄운다.
+        # 아이콘 위 드롭(argv 있음)은 아래 경로 그대로이고, 창은 뜨지 않는다.
+        return (launcher or _launch_dropzone)()
 
     # 여러 파일 동시 드래그(배치 처리)는 설계상 스코프 아웃이다(스펙 문서 "스코프 아웃" 절).
     # 예전에는 argv 를 그냥 순회하다 첫 파일 실패에서 조용히 멈췄는데, 어머니가 실수로
     # 여러 개를 집어 드롭하면 나머지가 안내도 없이 사라지는 셈이었다 — 아예 시작하지 않고
-    # 안내한다.
+    # 안내한다. 문구는 드롭존 창과 공유한다(`messages.py`).
     if len(argv) > 1:
-        _show_error("한 번에 한 개씩 올려주세요.")
+        _show_error(messages.TOO_MANY_FILES)
         return 1
 
-    hwp_path = argv[0]
-    output_dir = os.path.dirname(os.path.abspath(hwp_path))
     try:
-        _run_conversion(hwp_path, output_dir)
+        _convert_one(argv[0])
     except Hwp2ImgError as exc:
         _show_error(exc.user_message)
         return 1
     except Exception as exc:
-        log_path = _log_error(exc)
-        _show_error(f"예상하지 못한 문제가 생겼어요.\n\n자세한 내용은 이 파일에 저장했어요:\n{log_path}")
+        _show_error(_describe_unexpected(exc))
         return 1
     return 0
+
+
+def _convert_one(hwp_path: str) -> str:
+    """결과는 늘 원본 .hwp 가 있던 폴더에 만든다 — 두 진입점이 같이 쓴다."""
+    return _run_conversion(hwp_path, os.path.dirname(os.path.abspath(hwp_path)))
+
+
+def _describe_unexpected(exc: Exception) -> str:
+    """예외 전문은 로그로만 보내고, 어머니에게는 로그 경로만 알린다."""
+    return f"{messages.UNEXPECTED}\n\n자세한 내용은 이 파일에 저장했어요:\n{_log_error(exc)}"
+
+
+def _launch_dropzone() -> int:
+    """`dropzone` 은 여기서(함수 안에서) import 한다.
+
+    `dropzone` 이 이 모듈을 최상위에서 import 하므로 여기서도 최상위로 하면 순환이 된다.
+    그리고 argv 가 있는 경로 — 즉 지금까지 검증해 온 경로 — 는 tkinter 근처를 아예
+    건드리지 않게 된다. `run.py` 가 import 순서를 조심하는 것과 같은 이유다.
+    """
+    from hwp2img import dropzone
+
+    try:
+        return dropzone.launch(convert=_convert_one, describe_error=_describe_unexpected)
+    except Exception as exc:
+        # 창을 띄우는 것 자체가 실패할 수 있다 — 얼린 exe 에 tcl/tk 가 안 들어갔거나,
+        # tkinter import 가 깨졌거나. `--noconsole` 이라 이걸 안 잡으면 어머니는
+        # **아무 메시지도 없이** 아이콘만 반짝이는 것을 본다.
+        _show_error(_describe_unexpected(exc))
+        return 1
 
 
 def _run_conversion(hwp_path: str, output_dir: str) -> str:

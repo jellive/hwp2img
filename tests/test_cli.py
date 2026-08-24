@@ -151,14 +151,38 @@ def test_process_file_notice_has_real_path_even_when_explorer_also_fails(tmp_pat
     assert out_path in notices[0]
 
 
-def test_main_shows_error_and_returns_1_when_no_files(monkeypatch):
-    messages = []
-    monkeypatch.setattr(cli, "_show_error", lambda msg: messages.append(msg))
+def test_main_without_arguments_opens_the_dropzone_window():
+    """예전에는 여기서 '이 프로그램 위로 끌어다 놓아 주세요' 안내창만 띄우고 rc=1 로
+    끝났다 — 어머니가 아이콘을 더블클릭하면 아무것도 못 하는 막다른 길이었다."""
+    launched = []
 
-    result = cli.main([])
+    result = cli.main([], launcher=lambda: launched.append("dropzone") or 0)
+
+    assert result == 0
+    assert launched == ["dropzone"]
+
+
+def test_main_with_a_file_argument_never_opens_the_window(monkeypatch):
+    """기존 '아이콘 위에 드롭' 경로는 창 없이 지금까지와 똑같이 동작해야 한다."""
+    launched = []
+    conversions = []
+    monkeypatch.setattr(cli, "_run_conversion", lambda *args: conversions.append(args))
+
+    result = cli.main(["a.hwp"], launcher=lambda: launched.append("dropzone") or 0)
+
+    assert result == 0
+    assert launched == []
+    assert len(conversions) == 1
+
+
+def test_main_with_several_files_never_opens_the_window(monkeypatch):
+    launched = []
+    monkeypatch.setattr(cli, "_show_error", lambda msg: None)
+
+    result = cli.main(["a.hwp", "b.hwp"], launcher=lambda: launched.append("dropzone") or 0)
 
     assert result == 1
-    assert messages
+    assert launched == []
 
 
 def test_main_shows_error_and_returns_1_when_multiple_files_dropped_at_once(monkeypatch):
@@ -305,3 +329,30 @@ def _raise_oserror(*args, **kwargs):
 
 def _raise_runtime_error(*args, **kwargs):
     raise RuntimeError("무슨 일이 났는지 사용자에게 그대로 보여주면 안 되는 내용")
+
+
+def test_launch_dropzone_still_tells_the_user_when_the_window_itself_cannot_open(
+    monkeypatch, tmp_path
+):
+    """얼린 exe 에 tcl/tk 가 안 들어갔으면 창 띄우기가 통째로 터진다. `--noconsole` 이라
+    이걸 안 잡으면 어머니는 아무 메시지도 없이 아이콘만 반짝이는 것을 본다."""
+    from hwp2img import dropzone
+
+    fake_home = tmp_path / "fake_home"
+    (fake_home / "Desktop").mkdir(parents=True)
+    monkeypatch.setattr(os.path, "expanduser", lambda p: str(fake_home))
+
+    def cannot_open(**kwargs):
+        raise RuntimeError("no tcl/tk in this build")
+
+    monkeypatch.setattr(dropzone, "launch", cannot_open)
+
+    messages = []
+    monkeypatch.setattr(cli, "_show_error", lambda msg: messages.append(msg))
+
+    assert cli._launch_dropzone() == 1
+    assert len(messages) == 1
+    assert "예상하지 못한 문제" in messages[0]
+    # 원인은 로그로만 — 어머니에게 raw 예외를 보여주지 않는다
+    assert "no tcl/tk" not in messages[0]
+    assert "no tcl/tk" in (fake_home / "Desktop" / "hwp2img_오류.log").read_text(encoding="utf-8")
