@@ -22,6 +22,41 @@ _PATH_BUFFER_CHARS = 32768
 
 _DRAGQUERY_COUNT = 0xFFFFFFFF
 
+# ★★Win32 함수에는 **반드시** argtypes 를 박는다. 이걸 빼먹어서 실기기에서 드롭이
+#   통째로 안 먹었다(2026-08-24). Windows 러너 실측:
+#
+#     hdrop = 0x264596e0088   ← **42비트**. c_int 에 안 들어간다
+#     argtypes 없이 호출 → ctypes.ArgumentError: argument 1: OverflowError: int too long to convert
+#     argtypes 주고 호출 → count=1, path='C:\Users\m\공문.hwp'   ✅
+#
+#   Mac 에서는 같은 상황이 조용히 32비트로 **잘리기만** 해서 증상이 다르게 보인다 —
+#   그래서 로컬 재현만으로는 메커니즘을 오해한다.
+#   그리고 그 예외는 `_dispatch` 의 `except` 에 먹혀서 **화면상 아무 일도 안 일어난다.**
+HDROP = ctypes.c_void_p
+_DRAGQUERY_ARGTYPES = [HDROP, ctypes.c_uint, ctypes.c_wchar_p, ctypes.c_uint]
+
+
+def configure(shell32):
+    """`shell32` 의 프로토타입을 64비트 안전하게 박는다. 설정한 객체를 그대로 돌려준다."""
+    shell32.DragQueryFileW.argtypes = _DRAGQUERY_ARGTYPES
+    shell32.DragQueryFileW.restype = ctypes.c_uint
+    shell32.DragFinish.argtypes = [HDROP]
+    shell32.DragFinish.restype = None
+    shell32.DragAcceptFiles.argtypes = [HDROP, ctypes.c_bool]
+    shell32.DragAcceptFiles.restype = None
+    return shell32
+
+
+_configured_shell32 = None
+
+
+def _shell32():
+    """프로토타입을 박은 shell32. 한 번만 설정한다."""
+    global _configured_shell32
+    if _configured_shell32 is None:
+        _configured_shell32 = configure(ctypes.windll.shell32)
+    return _configured_shell32
+
 
 def extract_dropped_paths(hdrop, shell32=None) -> list[str]:
     """`WM_DROPFILES` 의 hDrop 핸들에서 떨어진 파일 경로를 **전부** 뽑는다.
@@ -33,7 +68,7 @@ def extract_dropped_paths(hdrop, shell32=None) -> list[str]:
     `DragFinish` 는 **반드시** 부른다 — 빼먹으면 드롭할 때마다 셸 메모리가 샌다.
     """
     if shell32 is None:
-        shell32 = ctypes.windll.shell32
+        shell32 = _shell32()
 
     try:
         count = shell32.DragQueryFileW(hdrop, _DRAGQUERY_COUNT, None, 0)
@@ -50,7 +85,7 @@ def extract_dropped_paths(hdrop, shell32=None) -> list[str]:
 class NullDropHook:
     """Windows 가 아닌 곳(개발 Mac)과 테스트용 — 아무것도 하지 않는다."""
 
-    def attach(self, hwnd, on_files) -> bool:
+    def attach(self, hwnd, on_files, on_error=None) -> bool:
         return False
 
     def detach(self) -> None:
@@ -70,10 +105,18 @@ class Win32DropHook:
         self._proc = None
         self._on_files = None
 
-    def attach(self, hwnd, on_files) -> bool:
+    def attach(self, hwnd, on_files, on_error=None) -> bool:
+        """`on_error(exc)` 를 주면 드롭 처리 중 난 예외를 알려 준다.
+
+        예외를 밖으로 내보낼 수는 없다 — WndProc 안에서 터지면 Windows 가 거기서 죽는다.
+        그런데 **조용히 삼키면 어머니 눈에는 드롭이 그냥 무반응으로 보인다.** 실제로
+        그것 때문에 실기기 왕복을 한 번 했다. 삼키되, 알릴 수는 있게 둔다.
+        """
         try:
             user32 = ctypes.windll.user32
-            ctypes.windll.shell32.DragAcceptFiles(hwnd, True)
+            _shell32().DragAcceptFiles(hwnd, True)
+
+            old_proc = [0]
 
             wndproc_type = ctypes.WINFUNCTYPE(
                 ctypes.c_ssize_t,
@@ -87,12 +130,23 @@ class Win32DropHook:
                 if message == WM_DROPFILES:
                     try:
                         on_files(extract_dropped_paths(wparam))
-                    except Exception:
+                    except Exception as exc:
                         # 드롭 처리가 터져도 창은 살아 있어야 한다. 여기서 예외가
                         # 새어나가면 Windows 가 우리 WndProc 안에서 죽는다.
-                        pass
+                        # 단 **조용히 죽지는 않는다** — 알릴 수단이 있으면 알린다.
+                        if on_error is not None:
+                            try:
+                                on_error(exc)
+                            except Exception:
+                                pass
                     return 0
-                return user32.CallWindowProcW(self._old_proc, handle, message, wparam, lparam)
+                # ★`set_long()` 이 돌아오는 순간부터 메시지가 여기로 들어온다. 예전에는
+                #   `self._old_proc` 을 그 **뒤에** 대입해서, 그 사이에 온 메시지가
+                #   `None` 을 원래 프로시저로 넘겼다. 원래 것을 아직 모르면 기본 처리로 보낸다.
+                previous = old_proc[0]
+                if not previous:
+                    return user32.DefWindowProcW(handle, message, wparam, lparam)
+                return user32.CallWindowProcW(previous, handle, message, wparam, lparam)
 
             proc = wndproc_type(_dispatch)
 
@@ -108,10 +162,18 @@ class Win32DropHook:
                 ctypes.c_size_t,
                 ctypes.c_ssize_t,
             ]
+            user32.DefWindowProcW.restype = ctypes.c_ssize_t
+            user32.DefWindowProcW.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_uint,
+                ctypes.c_size_t,
+                ctypes.c_ssize_t,
+            ]
 
             old = set_long(hwnd, GWLP_WNDPROC, ctypes.cast(proc, ctypes.c_void_p).value)
             if not old:
                 return False
+            old_proc[0] = old
 
             self._hwnd = hwnd
             self._old_proc = old

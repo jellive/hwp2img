@@ -270,8 +270,15 @@ def _build_window(convert, describe_error=None, drop_hook=None, root=None):
         for hwnd in _drop_target_handles(root):
             hooks.append((dnd.create_drop_hook(), hwnd))
 
+    def on_drop_error(_exc):
+        """드롭 처리가 터졌다. **조용히 넘어가면 무반응으로 보인다** — 버튼을 가리킨다."""
+        try:
+            root.after(0, lambda: view.set_status(messages.DROP_FAILED))
+        except Exception:
+            pass
+
     for hook, hwnd in hooks:
-        hook.attach(hwnd, on_dropped)
+        hook.attach(hwnd, on_dropped, on_error=on_drop_error)
 
     return root, controller, hooks
 

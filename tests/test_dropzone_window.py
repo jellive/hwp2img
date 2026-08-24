@@ -38,9 +38,11 @@ class RecordingHook:
     def __init__(self):
         self.attached = []
         self.detached = 0
+        self.on_error = None
 
-    def attach(self, hwnd, on_files):
+    def attach(self, hwnd, on_files, on_error=None):
         self.attached.append((hwnd, on_files))
+        self.on_error = on_error
         return True
 
     def detach(self):

@@ -14,6 +14,7 @@ BUSY = "지금 바꾸는 중이에요. 잠시만 기다려 주세요."
 CONVERTING = "바꾸는 중이에요…"
 BROWSE_BUTTON = "또는 여기를 눌러서 파일 고르기"
 UNEXPECTED = "예상하지 못한 문제가 생겼어요."
+DROP_FAILED = "끌어다 놓기가 잘 안 됐어요.\n아래 '파일 고르기' 버튼을 눌러 주세요."
 
 
 def done(out_path: str) -> str:
