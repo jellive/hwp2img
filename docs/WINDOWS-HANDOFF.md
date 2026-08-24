@@ -230,6 +230,29 @@ import 된다). 즉 이 변경으로 **기존 경로가 새로 깨질 자리는 
 
 **이게 CI 를 붙인 값어치다.** 첫 실행에서 바로 나왔다.
 
+## 릴리즈 실측 (v0.2.0, 2026-08-24) — 예측이 맞았고, 결과는 다르게 나왔다
+
+**`--collect-all pyhwpx` 는 죽지 않았다. 경고만 냈다:**
+
+```
+485 WARNING: Failed to collect submodules for 'pyhwpx' because importing 'pyhwpx' raised:
+    pywintypes.com_error: (-2147319779, 'Library not registered.', None, None)
+```
+
+즉 `core.py:66` 의 `EnsureModule` 이 한글 부재로 실패한다는 예측은 **정확히 맞았는데**,
+PyInstaller 가 그걸 치명적으로 취급하지 않고 넘어갔다. 그래서 빌드 형태는 `collect-all`
+(손으로 빌드하던 것과 같은 명령)로 기록됐고, 2차 폴백은 안 탔다.
+
+🔴 **그렇다고 손으로 빌드한 것과 같다는 뜻은 아니다.** `collect_all` 이 돌려주는 세 가지
+(datas · binaries · hiddenimports) 중 **hiddenimports 수집이 실패**했다. dll·데이터는
+들어갔고(빌드 검사에서 `FilePathCheckerModule` 문자열 확인됨) 서브모듈은 정적 분석으로
+따라왔을 가능성이 높지만, **한글이 깔린 PC 에서 빌드한 것과 구성이 같다고 단정할 수 없다.**
+→ 실기기에서 **변환을 한 번 끝까지** 돌려 봐야 확정된다.
+
+**자산 이름은 ASCII 여야 한다.** 첫 시도에서 `한글-사진으로-바꾸기.exe` 로 올렸더니
+릴리즈에 **`-.-.exe`** 로 게시됐다 — 한글이 통째로 하이픈이 됐다. `hwp2img.exe` 로 올리고
+이름 바꾸는 안내를 릴리즈 노트에 두는 쪽으로 되돌렸다(README 가 원래 그렇게 지시했다).
+
 ## 🔴 첫 CI 결과에서 **반드시** 확인할 것
 
 1. **`windows-latest` 에서 pytest 95개가 통과하나.** 특히 `tests/test_dropzone_window.py`

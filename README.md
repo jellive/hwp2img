@@ -8,7 +8,7 @@ Windows 머신에서 이어서 작업한다면 **[docs/WINDOWS-HANDOFF.md](docs/
 ## 받는 법
 
 [**Releases 페이지**](https://github.com/jellive/hwp2img/releases/latest)에서
-`한글-사진으로-바꾸기.exe` 를 받아 바탕화면에 두고, 이름을 **한글 사진으로 바꾸기** 로 바꾼다.
+`hwp2img.exe` 를 받아 바탕화면에 두고, 이름을 **한글 사진으로 바꾸기** 로 바꾼다.
 
 ⚠️ 받아서 실행하면 **"Windows에서 PC를 보호했습니다"** 파란 창이 뜬다. 고장이 아니라 이 exe 에
 코드 서명이 없어서다 — **[추가 정보] → [실행]**. 한 번 실행하면 다음부터는 안 뜬다.

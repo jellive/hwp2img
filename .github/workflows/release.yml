@@ -130,11 +130,10 @@ jobs:
           sha=$(python -c "import hashlib,pathlib; print(hashlib.sha256(pathlib.Path('dist/hwp2img.exe').read_bytes()).hexdigest())")
           echo "sha256=$sha" >> "$GITHUB_OUTPUT"
           echo "size_mb=$(( size / 1048576 ))" >> "$GITHUB_OUTPUT"
-          # ★ASCII 이름으로 빌드하고 나서 복사한다. 비-ASCII --name 으로 직접 빌드하면
-          #   일부 Windows 환경에서 PyInstaller 부트로더가 실패한 전례가 있다(README).
-          #   공백 대신 하이픈 — 릴리즈 자산 URL 인코딩 사고를 피한다.
-          # 유니코드 파일명은 git-bash 로케일에 안 맡긴다 — python 이 확실하다.
-          python -c "import shutil; shutil.copy('dist/hwp2img.exe', 'dist/\uD55C\uAE00-\uC0AC\uC9C4\uC73C\uB85C-\uBC14\uAFB8\uAE30.exe')"
+          # ★자산 이름은 ASCII 로 둔다. v0.2.0 에서 한글 이름으로 올렸다가
+          #   **`-.-.exe` 로 깨진 채 게시됐다**(실측) — 한글이 통째로 하이픈이 됐다.
+          #   어머니가 받을 파일명이 `-.-.exe` 인 것이 `hwp2img.exe` 보다 나쁘다.
+          #   이름 바꾸는 안내는 릴리즈 노트에 있고, README 도 원래 그렇게 지시했다.
 
       - name: 릴리즈 노트 작성
         shell: bash
@@ -168,4 +167,4 @@ jobs:
         with:
           body_path: RELEASE_NOTES.md
           fail_on_unmatched_files: true
-          files: dist/한글-사진으로-바꾸기.exe
+          files: dist/hwp2img.exe
