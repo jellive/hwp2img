@@ -47,7 +47,29 @@ class RecordingHook:
         self.detached += 1
 
 
-def _build(convert=None, hook=None):
+@pytest.fixture(scope="module")
+def tk_root():
+    """이 모듈 전체가 쓰는 **단 하나의** Tk root.
+
+    Tk 는 root 를 만들었다 부수기를 반복하면 불안정하다 — macOS 로컬에서 세그폴트했고,
+    Windows 러너에서는 4번째 생성이 `Can't find a usable init.tcl` 로 죽었다(둘 다 실측).
+    게다가 **가끔만** 그래서 더 나쁘다: 같은 코드가 2차 CI 에서는 10개 다 통과했다.
+    root 하나를 두고 창은 Toplevel 로 만든다.
+    """
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        pytest.skip(f"이 환경에서는 Tk 창을 띄울 수 없다: {exc}")
+    root.withdraw()
+    yield root
+    try:
+        if root.winfo_exists():
+            root.destroy()
+    except tk.TclError:
+        pass
+
+
+def _build(tk_root, convert=None, hook=None):
     """창을 만들고 곧바로 감춘다 — 테스트가 화면을 점거하지 않게.
 
     여기서는 `TclError` 를 잡지 않는다(모듈 상단 주석 참고).
@@ -57,6 +79,7 @@ def _build(convert=None, hook=None):
         root, controller, hooks = dropzone._build_window(
             convert=convert or (lambda path: f"{path}_변환.png"),
             drop_hook=hook,
+            root=tk.Toplevel(tk_root),
         )
     except tk.TclError as exc:
         if any(hint in str(exc) for hint in _DISPLAY_FAILURE_HINTS):
@@ -67,8 +90,8 @@ def _build(convert=None, hook=None):
 
 
 @pytest.fixture
-def window():
-    root, controller, hooks = _build()
+def window(tk_root):
+    root, controller, hooks = _build(tk_root)
     try:
         yield root, controller, hooks
     finally:
@@ -126,10 +149,10 @@ def test_the_window_actually_builds_with_the_prompt_visible(window):
     assert any(messages.BROWSE_BUTTON in t for t in texts)
 
 
-def test_drop_target_handles_parses_the_frame_handle_without_blowing_up():
+def test_drop_target_handles_parses_the_frame_handle_without_blowing_up(tk_root):
     """`wm_frame()` 은 '0x…' 문자열이라 파싱이 필요하다. 클라이언트 핸들과 같으면
     중복을 뺀다 — 안 그러면 같은 창을 두 번 서브클래싱한다."""
-    root, _controller, _hooks = _build()
+    root, _controller, _hooks = _build(tk_root)
     try:
         handles = dropzone._drop_target_handles(root)
         assert handles, "후보 핸들이 하나도 없다"
@@ -185,10 +208,10 @@ def _click_the_close_box(root):
     root.tk.call(root.protocol("WM_DELETE_WINDOW"))
 
 
-def test_closing_while_converting_keeps_the_window_alive():
+def test_closing_while_converting_keeps_the_window_alive(tk_root):
     """변환 중 창을 닫으면 워커(daemon)와 watchdog 자식이 --noconsole 뒤에 남는다."""
     gate = threading.Event()
-    root, controller, _hooks = _build(convert=lambda path: (gate.wait(5), "out.png")[1])
+    root, controller, _hooks = _build(tk_root, convert=lambda path: (gate.wait(5), "out.png")[1])
     try:
         controller.handle_paths(["C:/x/a.hwp"])
         assert controller.state == dropzone.PROCESSING
@@ -204,8 +227,8 @@ def test_closing_while_converting_keeps_the_window_alive():
             root.destroy()
 
 
-def test_closing_while_idle_really_closes_the_window():
-    root, controller, _hooks = _build()
+def test_closing_while_idle_really_closes_the_window(tk_root):
+    root, controller, _hooks = _build(tk_root)
     assert controller.state == dropzone.IDLE
     _click_the_close_box(root)
     assert not _window_is_open(root), "닫혀야 하는데 안 닫혔다"
@@ -246,10 +269,13 @@ def test_cancelling_the_browse_dialog_does_nothing(window, monkeypatch):
 # --- launch() 의 나머지 절반 ------------------------------------------------
 
 
-def test_launch_runs_the_main_loop_and_detaches_the_hook_on_the_way_out(monkeypatch):
+def test_launch_runs_the_main_loop_and_detaches_the_hook_on_the_way_out(tk_root, monkeypatch):
+    """`mainloop()` 은 마지막 창이 사라져야 끝난다. Toplevel 을 부숴도 root 가 살아 있으면
+    영원히 안 끝나므로, **이 테스트만** 모듈 root 자체를 창으로 쓴다. 모듈 마지막 테스트다."""
     hook = RecordingHook()
-    built = _build(hook=hook)
+    built = dropzone._build_window(convert=lambda p: "out.png", drop_hook=hook, root=tk_root)
     root = built[0]
+    root.withdraw()
     root.after(10, root.destroy)  # 메인 루프가 실제로 돌아야 이게 실행된다
     monkeypatch.setattr(dropzone, "_build_window", lambda *a, **k: built)
 

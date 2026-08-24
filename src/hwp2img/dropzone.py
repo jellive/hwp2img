@@ -178,7 +178,7 @@ def launch(convert, describe_error=None, drop_hook=None) -> int:
     return 0
 
 
-def _build_window(convert, describe_error=None, drop_hook=None):
+def _build_window(convert, describe_error=None, drop_hook=None, root=None):
     """창을 만들고 배선까지 끝낸 뒤 `(root, controller, hooks)` 을 돌려준다.
 
     `mainloop()` 을 여기서 안 부르는 건 **테스트 때문이다.** 예전에는 `launch()` 하나가
@@ -189,7 +189,12 @@ def _build_window(convert, describe_error=None, drop_hook=None):
     import tkinter as tk
     from tkinter import filedialog
 
-    root = tk.Tk()
+    # `root` 는 테스트가 창을 주입하기 위한 자리다. 실행 경로는 항상 None 으로 들어온다.
+    # Tk 는 root 를 만들었다 부수기를 반복하면 불안정하다 — macOS 는 세그폴트했고
+    # Windows 러너는 4번째 생성에서 `Can't find a usable init.tcl` 이 났다(둘 다 실측).
+    # 그래서 스모크 테스트는 root 하나를 두고 Toplevel 을 주입한다.
+    if root is None:
+        root = tk.Tk()
     root.title(WINDOW_TITLE)
     root.geometry("520x340")
     root.configure(bg="#f4f1ea")

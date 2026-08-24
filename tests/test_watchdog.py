@@ -161,7 +161,9 @@ def test_run_process_file_raises_timeout_error_without_actually_waiting_for_the_
 
 def test_run_process_file_propagates_hwp2img_error_with_its_user_message(tmp_path):
     txt_path = tmp_path / "메모.txt"
-    txt_path.write_text("hwp 가 아닌 파일")
+    # ★encoding 을 명시한다. 안 주면 **로케일 기본**으로 쓰는데, GitHub Windows 러너는
+    #   cp1252 라 한글에서 UnicodeEncodeError 가 난다(CI 실측). Mac 은 UTF-8 이라 안 보였다.
+    txt_path.write_text("hwp 가 아닌 파일", encoding="utf-8")
 
     with pytest.raises(UnsupportedFileError) as exc_info:
         watchdog.run_process_file(
