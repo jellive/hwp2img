@@ -169,6 +169,23 @@ class _TkView:
 
 def launch(convert, describe_error=None, drop_hook=None) -> int:
     """드롭존 창을 띄우고 닫힐 때까지 돈다. 정상 종료면 0."""
+    root, _controller, hooks = _build_window(convert, describe_error, drop_hook)
+    try:
+        root.mainloop()
+    finally:
+        for hook, _hwnd in hooks:
+            hook.detach()
+    return 0
+
+
+def _build_window(convert, describe_error=None, drop_hook=None):
+    """창을 만들고 배선까지 끝낸 뒤 `(root, controller, hooks)` 을 돌려준다.
+
+    `mainloop()` 을 여기서 안 부르는 건 **테스트 때문이다.** 예전에는 `launch()` 하나가
+    창 생성부터 메인 루프까지 다 했는데, 그러면 본문 전체가 어떤 테스트도 안 지나서
+    위젯 인자 오타 하나가 어머니 PC 까지 그대로 간다 — `--noconsole` 이라 거기서는
+    에러 메시지조차 안 보인다.
+    """
     import tkinter as tk
     from tkinter import filedialog
 
@@ -251,12 +268,7 @@ def launch(convert, describe_error=None, drop_hook=None) -> int:
     for hook, hwnd in hooks:
         hook.attach(hwnd, on_dropped)
 
-    try:
-        root.mainloop()
-    finally:
-        for hook, _ in hooks:
-            hook.detach()
-    return 0
+    return root, controller, hooks
 
 
 def _drop_target_handles(root) -> list[int]:

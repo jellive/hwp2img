@@ -35,6 +35,16 @@ Windows 머신에서 이어서 작업한다면 **[docs/WINDOWS-HANDOFF.md](docs/
     pip install -r requirements.txt
     pytest
 
+### Tk 스모크 테스트 (선택)
+
+`tests/test_dropzone_window.py`는 **진짜 Tk 창**을 띄워 드롭존을 검증한다. `_tkinter`가 없으면
+자동으로 skip 되므로 안 깔아도 나머지는 다 돈다. 붙이려면(Mac, Homebrew 파이썬 기준):
+
+    brew install python-tk@3.14   # venv 파이썬 버전에 맞출 것
+
+이게 없으면 **창을 만드는 코드가 한 줄도 실행되지 않는다** — 위젯 인자 오타 하나가
+어머니 PC까지 그대로 간다(`--noconsole`이라 거기서는 에러 메시지조차 안 보인다).
+
 `pyhwpx`/`pywin32`는 Windows 전용이라 Mac에서는 설치되지 않는다(`requirements.txt`의 플랫폼 마커).
 `hwp_to_pdf.py`/`output.py`의 Windows 전용 함수는 의존성 주입으로 테스트되므로 Mac에서도 전체
 테스트 스위트가 통과해야 한다.
