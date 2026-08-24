@@ -156,3 +156,96 @@ def test_other_messages_still_reach_the_original_window_procedure(window):
         hook.detach()
     window.update()
     assert window.winfo_exists()
+
+
+# --- 드롭존 **전체 배선** (실기기에서 죽은 자리) ------------------------------
+
+
+def test_the_whole_dropzone_survives_a_real_drop(window):
+    """지금까지의 테스트는 드롭 콜백이 `list.append` 였다 — **Tk 를 안 만진다.**
+
+    실기기는 창이 뜨고 나서 **드롭하는 순간 죽었다.** 그 경로는 여기부터다:
+    WndProc 콜백 → `root.after` → 컨트롤러 → 워커 스레드 → 결과를 다시 메인 루프로.
+    파일명에 **띄어쓰기와 괄호**를 넣는다 — 실기기에서 죽은 파일이 그런 이름이었다.
+    """
+    from hwp2img import dropzone
+
+    dropped = r"C:\Users\m\공문 최종 (수정).hwp"
+    converted = []
+
+    root, controller, hooks = dropzone._build_window(
+        convert=lambda path: (converted.append(path), path + "_변환.png")[1],
+        drop_hook=None,  # ★진짜 Win32DropHook 을 쓴다
+    )
+    try:
+        root.withdraw()
+        root.update()
+        assert hooks, "훅이 하나도 안 붙었다"
+
+        user32 = ctypes.windll.user32
+        user32.SendMessageW.restype = ctypes.c_ssize_t
+        user32.SendMessageW.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t
+        ]
+        user32.SendMessageW(root.winfo_id(), WM_DROPFILES, _make_hdrop([dropped]), 0)
+
+        # 창이 아직 살아 있어야 한다 — 실기기에서는 여기서 죽었다
+        assert root.winfo_exists(), "드롭 직후 창이 사라졌다"
+
+        import time as _time
+
+        deadline = _time.monotonic() + 10
+        while controller.state == dropzone.PROCESSING and _time.monotonic() < deadline:
+            root.update()
+            _time.sleep(0.01)
+        root.update()
+
+        assert root.winfo_exists(), "변환이 끝난 뒤 창이 사라졌다"
+        assert converted == [dropped], f"변환에 안 넘어갔다: {converted}"
+        assert controller.state == dropzone.IDLE
+    finally:
+        for hook, _hwnd in hooks:
+            hook.detach()
+        try:
+            if root.winfo_exists():
+                root.destroy()
+        except tk.TclError:
+            pass
+
+
+def test_a_drop_still_works_when_the_window_is_the_only_hook_target(window):
+    """`_drop_target_handles` 가 후보를 두 개 돌려주면 같은 창에 훅이 둘 붙는다.
+    그 상태에서도 드롭이 한 번만 처리돼야 한다(두 번 변환하면 안 된다)."""
+    from hwp2img import dropzone
+
+    calls = []
+    root, controller, hooks = dropzone._build_window(
+        convert=lambda path: (calls.append(path), "out.png")[1],
+        drop_hook=None,
+    )
+    try:
+        root.withdraw()
+        root.update()
+        user32 = ctypes.windll.user32
+        user32.SendMessageW.restype = ctypes.c_ssize_t
+        user32.SendMessageW.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t
+        ]
+        user32.SendMessageW(root.winfo_id(), WM_DROPFILES, _make_hdrop([r"C:\a b.hwp"]), 0)
+
+        import time as _time
+
+        deadline = _time.monotonic() + 10
+        while controller.state == dropzone.PROCESSING and _time.monotonic() < deadline:
+            root.update()
+            _time.sleep(0.01)
+        root.update()
+        assert calls == [r"C:\a b.hwp"], f"변환 호출이 {len(calls)}번이다"
+    finally:
+        for hook, _hwnd in hooks:
+            hook.detach()
+        try:
+            if root.winfo_exists():
+                root.destroy()
+        except tk.TclError:
+            pass
