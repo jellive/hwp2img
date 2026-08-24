@@ -69,6 +69,19 @@ def _make_hdrop(paths):
     return handle
 
 
+def _pump_until(root, done, timeout=10.0):
+    """메인 루프를 돌려 `_build_window` 이 건 pump 가 큐를 비우게 한다."""
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        root.update()
+        if done():
+            return True
+        time.sleep(0.02)
+    return False
+
+
 @pytest.fixture
 def window():
     try:
@@ -192,13 +205,9 @@ def test_the_whole_dropzone_survives_a_real_drop(window):
         # 창이 아직 살아 있어야 한다 — 실기기에서는 여기서 죽었다
         assert root.winfo_exists(), "드롭 직후 창이 사라졌다"
 
-        import time as _time
-
-        deadline = _time.monotonic() + 10
-        while controller.state == dropzone.PROCESSING and _time.monotonic() < deadline:
-            root.update()
-            _time.sleep(0.01)
-        root.update()
+        # 드롭은 이제 **큐에 들어간다** — 메인 루프의 pump 가 가져가야 변환이 시작된다.
+        # 그래서 state 로만 기다리면 아직 IDLE 이라 루프가 즉시 빠진다.
+        _pump_until(root, lambda: converted and controller.state == dropzone.IDLE)
 
         assert root.winfo_exists(), "변환이 끝난 뒤 창이 사라졌다"
         assert converted == [dropped], f"변환에 안 넘어갔다: {converted}"
@@ -233,13 +242,8 @@ def test_a_drop_still_works_when_the_window_is_the_only_hook_target(window):
         ]
         user32.SendMessageW(root.winfo_id(), WM_DROPFILES, _make_hdrop([r"C:\a b.hwp"]), 0)
 
-        import time as _time
-
-        deadline = _time.monotonic() + 10
-        while controller.state == dropzone.PROCESSING and _time.monotonic() < deadline:
-            root.update()
-            _time.sleep(0.01)
-        root.update()
+        _pump_until(root, lambda: calls and controller.state == dropzone.IDLE)
+        # 훅이 둘 붙어도 변환은 한 번만 — 두 번 돌면 한글 COM 이 동시에 두 개 뜬다
         assert calls == [r"C:\a b.hwp"], f"변환 호출이 {len(calls)}번이다"
     finally:
         for hook, _hwnd in hooks:
