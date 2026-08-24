@@ -1,0 +1,81 @@
+name: smoke
+
+# 얼린 exe 를 **실제로 띄워 본다.** 빌드가 되는 것과 실행되는 것은 다르다.
+# `--noconsole` 이라 실기기에서는 죽어도 아무 메시지가 안 보이므로, 여기서 잡아야 한다.
+#
+# ★파일 이름을 A/B 로 비교한다. README 가 "비-ASCII 이름으로 빌드하면 부트로더가
+#   실패한 전례가 있다" 고 적어 뒀는데, **빌드 후 이름을 바꾸는 것**도 같은 문제인지는
+#   아무도 확인한 적이 없다. 어머니는 릴리즈 노트 안내대로 한글+공백 이름으로 바꾼다.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  launch:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: 의존성 설치
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: exe 빌드
+        shell: bash
+        run: pyinstaller --onefile --noconsole --collect-all pyhwpx --name "hwp2img" src/run.py
+
+      - name: 이름별로 띄워 본다 (A/B)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # 실기기에서 오류 로그가 떨어지는 자리를 미리 비운다
+          $logs = @("$env:USERPROFILE\Desktop\hwp2img_오류.log", "$env:TEMP\hwp2img_오류.log")
+          foreach ($l in $logs) { if (Test-Path $l) { Remove-Item $l -Force } }
+
+          $cases = @(
+            @{ Name = 'A. ASCII 이름';                  File = 'hwp2img.exe' },
+            @{ Name = 'B. 한글+공백 (어머니가 쓰는 이름)'; File = '한글 사진으로 바꾸기.exe' },
+            @{ Name = 'C. 한글, 공백 없음';               File = '한글사진으로바꾸기.exe' },
+            @{ Name = 'D. ASCII+공백';                   File = 'hwp to img.exe' }
+          )
+
+          $failed = 0
+          foreach ($c in $cases) {
+            $target = Join-Path 'dist' $c.File
+            Copy-Item 'dist\hwp2img.exe' $target -Force
+            Write-Host "=============================================="
+            Write-Host "$($c.Name)  →  $($c.File)"
+
+            $p = Start-Process -FilePath (Resolve-Path $target) -PassThru
+            Start-Sleep -Seconds 12
+
+            $alive = -not $p.HasExited
+            if ($alive) {
+              Write-Host "  ✅ 12초 뒤에도 살아 있다 (창이 떴다는 뜻)"
+              Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            } else {
+              Write-Host "  ❌ 죽었다. ExitCode=$($p.ExitCode)"
+              $failed++
+            }
+            foreach ($l in $logs) {
+              if (Test-Path $l) {
+                Write-Host "  --- 오류 로그 ($l) ---"
+                Get-Content $l -Tail 40 | ForEach-Object { Write-Host "  $_" }
+                Remove-Item $l -Force
+              }
+            }
+          }
+
+          Write-Host "=============================================="
+          if ($failed -gt 0) {
+            Write-Host "::error::$failed 개 이름에서 실행 실패"
+            exit 1
+          }
+          Write-Host "네 가지 이름 모두 정상 실행"
