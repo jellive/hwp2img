@@ -16,6 +16,7 @@ Windows 실기기에서만 확인된다. Tk 버전도 다르다(Mac 9.0 / Window
 """
 
 import threading
+import time
 
 import pytest
 
@@ -73,6 +74,25 @@ def window():
     finally:
         if root.winfo_exists():
             root.destroy()
+
+
+def _settle(root, controller, timeout=5.0):
+    """워커가 결과를 메인 루프에 넘기고 IDLE 로 돌아올 때까지 이벤트를 돌린다.
+
+    ★**살아 있는 워커를 두고 `root.destroy()` 하면 프로세스가 통째로 죽는다.** 그 워커가
+    파괴된 Tk 를 만지는 순간 Tcl 이 패닉하는데, 그건 파이썬 예외가 아니라 `abort()` 라
+    try/except 로 못 잡는다. CI 실측(2026-08-24): Windows `0x80000003` ·
+    macOS `Abort trap: 6`. 게다가 **나중에** 터져서 엉뚱한 테스트가 죽은 것처럼 보였다.
+
+    실앱은 `can_close()` 가 변환 중 닫기를 막아 이 상황 자체를 안 만든다 — 이 테스트가
+    그 보호를 일부러 우회했기 때문에 생기는 일이다.
+    """
+    deadline = time.monotonic() + timeout
+    while controller.state == dropzone.PROCESSING and time.monotonic() < deadline:
+        if _window_is_open(root):
+            root.update()
+        time.sleep(0.01)
+    return controller.state
 
 
 def _window_is_open(root) -> bool:
@@ -179,6 +199,7 @@ def test_closing_while_converting_keeps_the_window_alive():
         assert any(messages.BUSY in t for t in _texts(root))
     finally:
         gate.set()
+        assert _settle(root, controller) == dropzone.IDLE, "워커가 안 끝났다 — 지금 창을 부수면 프로세스가 죽는다"
         if _window_is_open(root):
             root.destroy()
 
