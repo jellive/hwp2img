@@ -327,3 +327,64 @@ exception=ArgumentError: argument 1: OverflowError: int too long to convert
 - **조용한 실패를 없앴다** — 드롭 처리가 터지면 창이 "끌어다 놓기가 잘 안 됐어요.
   아래 '파일 고르기' 버튼을 눌러 주세요" 를 띄운다. 예외를 WndProc 밖으로 낼 수는 없지만,
   **조용히 삼키면 무반응으로 보인다.** 그것 때문에 실기기 왕복을 한 번 했다.
+
+
+---
+
+# 드롭하면 앱이 죽던 원인 (v0.2.2, 2026-08-24)
+
+v0.2.1 실기기 보고: **창은 뜨는데 파일을 끌어다 놓으면 앱이 죽는다.**
+
+## 먼저 배제한 것
+
+- **exe 파일 이름** — 스모크 워크플로(`.github/workflows/smoke.yml`)로 ASCII / 한글+공백 /
+  한글 / ASCII+공백 **네 조합 모두 정상 실행** 확인. 게다가 Jell 은 `hwp2img.exe` 그대로 썼다.
+- **PyInstaller 부트로더** — 창이 뜨므로 실행 자체는 된다.
+
+## 원인 — 워커 스레드가 Tk 를 만졌다
+
+전체 배선을 진짜 `WM_DROPFILES` 로 치는 테스트를 Windows CI 에 넣자 즉시 재현됐다:
+
+```
+test_the_whole_dropzone_survives_a_real_drop
+AssertionError: assert 'processing' == 'idle'
+```
+
+창은 살고 변환도 호출되는데 **결과가 화면으로 영영 안 돌아왔다.**
+`DropZoneController._finish` 가 **워커 스레드에서** `root.winfo_exists()` 와 `root.after()` 를
+직접 불렀기 때문이다. **tkinter 는 스레드 안전하지 않다.**
+CI Tk 에서는 콜백이 조용히 안 도는 것으로, 실기기에서는 **Tcl 패닉 → 프로세스 사망**으로 나타났다.
+
+★**버튼 경로에서 안 드러난 이유**: 저장·클립보드·탐색기는 전부 **자식 프로세스**가 한다.
+그래서 창 글자만 안 바뀌고 사용자는 성공으로 본다 — **잠복해 있었을 뿐 늘 틀린 코드였다.**
+
+## 지금 구조
+
+**어느 스레드에서도 Tk 를 만지지 않는다.**
+
+```
+WndProc 콜백 ──> controller.offer_paths()  ──┐
+워커 스레드   ──> controller._outbox.put()  ──┤   (둘 다 큐에 넣기만 한다)
+                                              │
+메인 루프 ── root.after(100ms) ── pump() ── controller.poll() ──> view.set_status()
+```
+
+- `offer_paths` / `_work` 는 view 를 **건드리지 않는다.** `ExplodingView`(건드리면 터지는 가짜)로
+  그 계약을 테스트가 고정한다 — 되돌리면 변이 검사가 잡는다.
+- `_finish`/`_apply`/`schedule` 기계장치를 통째로 없앴다. 부품이 줄었다.
+- WndProc 콜백이 Tcl 을 아예 안 건드리므로 **재진입 걱정도 같이 사라졌다.**
+- `pump` 는 `launch()` 가 아니라 `_build_window()` 에 있다 — 배선 쪽에 없으면
+  `_build_window` 로 만든 창은 큐가 영원히 안 비워진다(테스트가 잡았다).
+
+## 지금 그 자리를 무엇이 지키나
+
+- `tests/test_dnd_windows.py::test_the_whole_dropzone_survives_a_real_drop` —
+  **띄어쓰기와 괄호가 든 파일명**(`공문 최종 (수정).hwp`)으로 진짜 드롭 메시지를 보내
+  변환 호출과 창 생존을 확인한다. Windows CI 108 passed.
+- `tests/test_dropzone.py` 의 `ExplodingView` 계열 — 스레드 경계 계약.
+
+## 🔴 아직 안 본 것
+
+CI 의 드롭 테스트는 `convert` 를 가짜로 준다. 즉 **창이 떠 있는 상태에서 실제 한글 COM 변환**
+(= `watchdog` 이 얼린 exe 안에서 자식 프로세스를 spawn 하는 것)은 여전히 실기기 전용이다.
+드롭까지 되고 변환에서 문제가 생기면 그 조합이 범인이다.
