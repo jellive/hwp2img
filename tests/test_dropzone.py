@@ -1,8 +1,11 @@
 """드롭존 창의 **판정과 상태 전이**를 Tk 없이 검증한다.
 
-실제 Tk 창은 이 Mac 에서 띄울 수 없다 — `_tkinter` 가 없다(3.11·3.14 둘 다 실측).
-그래서 `DropZoneController` 는 view 를 주입받고, 여기서는 가짜 view 를 넣는다.
-이 레포가 Windows 전용 함수(`output.copy_to_clipboard` 등)에 이미 쓰는 방식과 같다.
+실제 Tk 창은 이 Mac 에서 띄울 수 없을 수도 있다(`_tkinter` 부재). 그래서
+`DropZoneController` 는 view 를 주입받고, 여기서는 가짜 view 를 넣는다.
+
+★이 파일의 제일 중요한 계약: **메인 스레드가 아닌 곳에서는 view 를 만지지 않는다.**
+실기기에서 앱이 드롭하는 순간 죽은 원인이 그것이었다(tkinter 는 스레드 안전하지 않다).
+`ExplodingView` 를 쓰는 테스트들이 그 계약을 고정한다.
 """
 
 import pytest
@@ -12,22 +15,15 @@ from hwp2img.errors import HwpTimeoutError, UnsupportedFileError
 
 
 class FakeView:
-    """schedule() 을 즉시 실행하는 가짜 메인 스레드."""
-
     def __init__(self, alive=True):
         self.statuses = []
         self._alive = alive
-        self.scheduled = 0
 
     def set_status(self, text):
         self.statuses.append(text)
 
     def is_alive(self):
         return self._alive
-
-    def schedule(self, fn):
-        self.scheduled += 1
-        fn()
 
     def close(self):
         self._alive = False
@@ -37,6 +33,16 @@ class FakeView:
         return self.statuses[-1] if self.statuses else None
 
 
+class ExplodingView:
+    """건드리기만 해도 터진다 — '이 자리에서 view 를 만지면 안 된다' 를 고정하는 데 쓴다."""
+
+    def set_status(self, text):
+        raise AssertionError("메인 스레드가 아닌 곳에서 view.set_status 를 불렀다")
+
+    def is_alive(self):
+        raise AssertionError("메인 스레드가 아닌 곳에서 view.is_alive 를 불렀다")
+
+
 def _sync_spawn(fn):
     """워커 스레드 대신 그 자리에서 실행한다."""
     fn()
@@ -44,7 +50,7 @@ def _sync_spawn(fn):
 
 def _controller(convert, view=None, spawn=_sync_spawn, describe_error=None):
     return dropzone.DropZoneController(
-        view=view or FakeView(),
+        view=view if view is not None else FakeView(),
         convert=convert,
         spawn=spawn,
         describe_error=describe_error,
@@ -61,10 +67,14 @@ def test_classify_accepts_hwp_regardless_of_case(name):
     assert payload == f"C:/x/{name}"
 
 
+def test_classify_keeps_spaces_in_the_path():
+    """실기기에서 죽은 파일 이름에 띄어쓰기가 있었다 — 경로를 훼손하지 않는지 고정한다."""
+    dropped = r"C:\Users\m\공문 최종 (수정).hwp"
+    assert dropzone.classify_drop([dropped]) == (dropzone.ACCEPT, dropped)
+
+
 def test_classify_rejects_multiple_files_with_the_same_wording_as_the_argv_branch():
-    verdict, payload = dropzone.classify_drop(["a.hwp", "b.hwp"])
-    assert verdict == dropzone.REJECT
-    assert payload == messages.TOO_MANY_FILES
+    assert dropzone.classify_drop(["a.hwp", "b.hwp"]) == (dropzone.REJECT, messages.TOO_MANY_FILES)
 
 
 def test_classify_rejects_unsupported_extension_with_the_existing_error_wording():
@@ -74,220 +84,175 @@ def test_classify_rejects_unsupported_extension_with_the_existing_error_wording(
 
 
 def test_classify_rejects_empty_drop():
-    verdict, _ = dropzone.classify_drop([])
-    assert verdict == dropzone.REJECT
+    assert dropzone.classify_drop([])[0] == dropzone.REJECT
 
 
-# --- 상태 전이 -------------------------------------------------------------
+# --- ★스레드 경계: 여기서는 view 를 만지면 안 된다 --------------------------
 
 
-def test_successful_conversion_returns_to_idle():
+def test_offering_a_drop_never_touches_the_view():
+    """`offer_paths` 는 **Win32 WndProc 콜백 안에서** 불린다. 거기서 Tk 를 만지면
+    Tcl 이 메시지 처리 도중 재진입한다."""
+    c = _controller(lambda p: "out.png", view=ExplodingView())
+    c.offer_paths([r"C:\a b.hwp"])  # 터지면 여기서 실패한다
+    assert c.state == dropzone.IDLE  # 아직 처리 안 됐다 — poll 이 해야 한다
+
+
+def test_the_worker_never_touches_the_view():
+    """변환은 워커 스레드에서 돈다. **여기서 Tk 를 만져서 실기기 앱이 죽었다.**"""
+    c = dropzone.DropZoneController(
+        view=ExplodingView(), convert=lambda p: "out.png", spawn=_sync_spawn
+    )
+    c._work(r"C:\a b.hwp")  # 워커가 하는 일 전부. 터지면 실패한다
+
+
+def test_the_worker_never_touches_the_view_on_failure():
+    def boom(_path):
+        raise HwpTimeoutError("stuck")
+
+    c = dropzone.DropZoneController(view=ExplodingView(), convert=boom, spawn=_sync_spawn)
+    c._work(r"C:\a b.hwp")
+
+
+def test_offering_a_notice_never_touches_the_view():
+    c = _controller(lambda p: "out.png", view=ExplodingView())
+    c.offer_notice(messages.DROP_FAILED)
+
+
+# --- poll 이 실제로 반영한다 -------------------------------------------------
+
+
+def test_polling_turns_an_offered_drop_into_a_conversion():
     view = FakeView()
-    c = _controller(lambda p: "C:/x/a_변환.png", view=view)
+    converted = []
+    c = _controller(lambda p: (converted.append(p), "C:/x/a_변환.png")[1], view=view)
 
-    c.handle_paths(["C:/x/a.hwp"])
+    c.offer_paths([r"C:\공문 최종.hwp"])
+    assert converted == []  # 아직
 
+    c.poll()
+    assert converted == [r"C:\공문 최종.hwp"]
+    c.poll()  # 결과 반영
     assert c.state == dropzone.IDLE
-    assert messages.CONVERTING in view.statuses
     assert "a_변환.png" in view.last
 
 
-def test_conversion_failure_also_returns_to_idle_so_the_next_drop_still_works():
-    """레드팀 지적: '변환 중…' 에 갇히면 이후 드롭이 영구히 막힌다."""
+def test_polling_reports_a_failure_and_returns_to_idle():
     view = FakeView()
 
     def boom(_path):
         raise HwpTimeoutError("stuck")
 
     c = _controller(boom, view=view)
-    c.handle_paths(["C:/x/a.hwp"])
+    c.handle_paths([r"C:\a.hwp"])
+    assert c.state == dropzone.PROCESSING  # 아직 화면에 안 그려졌다
 
+    c.poll()
     assert c.state == dropzone.IDLE
     assert view.last == HwpTimeoutError("stuck").user_message
 
-    # 그리고 실제로 다음 드롭이 받아들여진다
-    calls = []
-    c._convert = lambda p: (calls.append(p), "out.png")[1]
-    c.handle_paths(["C:/x/b.hwp"])
-    assert calls == ["C:/x/b.hwp"]
 
-
-def test_unexpected_exception_uses_the_injected_describer():
+def test_polling_uses_the_injected_describer_for_unexpected_errors():
     view = FakeView()
 
     def boom(_path):
         raise ValueError("nope")
 
     c = _controller(boom, view=view, describe_error=lambda exc: f"로그: {exc}")
-    c.handle_paths(["C:/x/a.hwp"])
-
-    assert c.state == dropzone.IDLE
+    c.handle_paths([r"C:\a.hwp"])
+    c.poll()
     assert view.last == "로그: nope"
+    assert c.state == dropzone.IDLE
+
+
+def test_a_notice_does_not_end_the_conversion():
+    """드롭 실패 안내는 상태를 안 건드린다 — 변환 중이면 변환 중인 채로 둔다."""
+    view = FakeView()
+    pending = []
+    c = _controller(lambda p: "out.png", view=view, spawn=pending.append)
+
+    c.handle_paths([r"C:\a.hwp"])
+    assert c.state == dropzone.PROCESSING
+    c.offer_notice(messages.DROP_FAILED)
+    c.poll()
+    assert view.last == messages.DROP_FAILED
+    assert c.state == dropzone.PROCESSING, "안내가 변환 상태를 끝내 버렸다"
+
+
+def test_results_are_applied_before_new_drops_are_accepted():
+    """순서를 바꾸면 방금 시작한 변환의 '바꾸는 중…' 을 직전 결과가 덮어쓴다."""
+    view = FakeView()
+    c = _controller(lambda p: "먼저.png", view=view)
+
+    c.handle_paths([r"C:\first.hwp"])  # 결과가 outbox 에 쌓인다
+    c.offer_paths([r"C:\second.hwp"])  # 새 드롭이 inbox 에 쌓인다
+    c.poll()
+
+    assert view.statuses[-1] == messages.CONVERTING, "결과가 새 변환 안내를 덮어썼다"
+
+
+# --- 상태 전이 -------------------------------------------------------------
 
 
 def test_drop_while_processing_is_rejected_and_does_not_start_a_second_conversion():
     view = FakeView()
     started = []
-
-    def convert(path):
-        started.append(path)
-        return "out.png"
-
-    # 첫 변환이 아직 안 끝난 상태를 만든다 — spawn 이 즉시 실행하지 않는다.
     pending = []
-    c = _controller(convert, view=view, spawn=pending.append)
+    c = _controller(lambda p: (started.append(p), "out.png")[1], view=view, spawn=pending.append)
 
-    c.handle_paths(["C:/x/a.hwp"])
+    c.handle_paths([r"C:\a.hwp"])
     assert c.state == dropzone.PROCESSING
 
-    c.handle_paths(["C:/x/b.hwp"])
+    c.handle_paths([r"C:\b.hwp"])
     assert view.last == messages.BUSY
 
     for job in pending:
         job()
-    assert started == ["C:/x/a.hwp"]
+    c.poll()
+    assert started == [r"C:\a.hwp"]
     assert c.state == dropzone.IDLE
 
 
 def test_reject_does_not_enter_processing():
     view = FakeView()
     c = _controller(lambda p: pytest.fail("변환이 시작되면 안 된다"), view=view)
-
     c.handle_paths(["보고서.pdf"])
-
     assert c.state == dropzone.IDLE
 
 
-# --- 창이 닫히는 경쟁 (레드팀 지적 #6) --------------------------------------
+# --- 창이 닫힌 뒤 -----------------------------------------------------------
 
 
-def test_result_is_not_written_to_a_window_that_was_already_closed():
+def test_nothing_is_written_to_a_window_that_was_closed():
     view = FakeView()
-    pending = []
-    c = _controller(lambda p: "out.png", view=view, spawn=pending.append)
-
-    c.handle_paths(["C:/x/a.hwp"])
-    view.close()  # 변환이 도는 동안 어머니가 창을 닫았다
+    c = _controller(lambda p: "out.png", view=view)
+    c.handle_paths([r"C:\a.hwp"])
+    view.close()
     before = len(view.statuses)
-    view.scheduled = 0
-    for job in pending:
-        job()
+
+    c.poll()
 
     assert len(view.statuses) == before  # 죽은 창을 갱신하지 않았다
-    # 죽은 메인 루프에 일감을 **넣지도** 않는다. 이걸 안 보면 _apply 쪽 가드 하나가
-    # 두 가드를 다 덮어 버려서 이 테스트가 무뎌진다(변이 검사에서 실제로 그랬다).
-    assert view.scheduled == 0
-    assert c.state == dropzone.IDLE
-
-
-def test_result_is_not_written_when_the_window_dies_between_the_two_guards():
-    """is_alive 검사와 실제 갱신 사이에 창이 닫히는 경쟁 — _apply 쪽 가드를 고정한다."""
-
-    class DiesOnSchedule(FakeView):
-        def schedule(self, fn):
-            self.scheduled += 1
-            self._alive = False  # after() 로 넘긴 직후 창이 닫혔다
-            fn()
-
-    view = DiesOnSchedule()
-    c = _controller(lambda p: "out.png", view=view)
-    c.handle_paths(["C:/x/a.hwp"])
-
-    assert view.scheduled == 1
-    assert view.statuses == [messages.CONVERTING]  # 결과는 안 쓰였다
-    assert c.state == dropzone.IDLE
-
-
-def test_worker_never_raises_into_the_thread_even_if_the_view_blows_up():
-    """워커 스레드에서 새어나간 예외는 아무도 못 본다 — 안에서 삼킨다."""
-
-    class ExplodingView(FakeView):
-        def schedule(self, fn):
-            raise RuntimeError("main loop is gone")
-
-    c = _controller(lambda p: "out.png", view=ExplodingView())
-    c.handle_paths(["C:/x/a.hwp"])  # 예외가 나가면 이 줄에서 실패한다
-    assert c.state == dropzone.IDLE
-
-
-# --- 워커 ↔ 메인 스레드 경계 (cursor diff 리뷰 지적) ------------------------
-
-
-class DeferredView(FakeView):
-    """`root.after(0, …)` 처럼 **나중에** 실행되는 스케줄러."""
-
-    def __init__(self):
-        super().__init__()
-        self.queue = []
-
-    def schedule(self, fn):
-        self.scheduled += 1
-        self.queue.append(fn)
-
-    def flush(self):
-        jobs, self.queue = self.queue, []
-        for job in jobs:
-            job()
-
-
-def test_stays_processing_until_the_main_thread_actually_applies_the_result():
-    """워커가 `_state=IDLE` 을 먼저 찍으면, 결과가 화면에 그려지기 전에 다음 드롭이
-    받아들여진다. 그러면 늦게 도착한 이전 결과가 새 변환의 '바꾸는 중…' 을 덮어써서
-    어머니가 **아직 변환 중인데 '다 됐어요' 를 보게 된다.**"""
-    view = DeferredView()
-    c = _controller(lambda p: "out.png", view=view)
-
-    c.handle_paths(["C:/x/a.hwp"])  # 워커는 즉시 돌고 _finish 까지 갔다
-    assert view.scheduled == 1
-    assert c.state == dropzone.PROCESSING  # 아직 화면에 안 그려졌다
-
-    c.handle_paths(["C:/x/b.hwp"])  # 이 틈에 들어온 드롭
-    assert view.last == messages.BUSY
-
-    view.flush()
-    assert c.state == dropzone.IDLE
-    assert "out.png" in view.last
-
-
-def test_state_returns_to_idle_even_when_the_window_died_before_scheduling():
-    view = FakeView()
-    pending = []
-    c = _controller(lambda p: "out.png", view=view, spawn=pending.append)
-    c.handle_paths(["C:/x/a.hwp"])
-    view.close()
-    for job in pending:
-        job()
-    assert c.state == dropzone.IDLE  # 안 그러면 창이 살아나도 영구히 막힌다
-
-
-def test_state_returns_to_idle_when_scheduling_itself_blows_up():
-    class ExplodingView(FakeView):
-        def schedule(self, fn):
-            raise RuntimeError("main loop is gone")
-
-    c = _controller(lambda p: "out.png", view=ExplodingView())
-    c.handle_paths(["C:/x/a.hwp"])
-    assert c.state == dropzone.IDLE
+    assert c.state == dropzone.IDLE  # 상태는 되돌아온다
 
 
 # --- 변환 중 창 닫기 --------------------------------------------------------
 
 
 def test_closing_is_refused_while_a_conversion_is_running():
-    """변환 중에 창을 닫으면 워커 스레드(daemon)와 watchdog 자식 프로세스가 어중간하게
-    남는다. `--noconsole` 이라 어머니 눈에는 아무것도 안 보인다. watchdog 이 30초 안에
-    무조건 끝내므로, 그동안 닫기를 막는 편이 안전하다."""
-    view = DeferredView()
-    c = _controller(lambda p: "out.png", view=view)
+    view = FakeView()
+    pending = []
+    c = _controller(lambda p: "out.png", view=view, spawn=pending.append)
 
-    c.handle_paths(["C:/x/a.hwp"])
+    c.handle_paths([r"C:\a.hwp"])
     assert c.can_close() is False
     assert view.last == messages.BUSY
 
-    view.flush()
+    for job in pending:
+        job()
+    c.poll()
     assert c.can_close() is True
 
 
 def test_closing_is_allowed_when_idle():
-    c = _controller(lambda p: "out.png")
-    assert c.can_close() is True
+    assert _controller(lambda p: "out.png").can_close() is True

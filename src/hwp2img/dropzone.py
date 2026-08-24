@@ -11,6 +11,19 @@ tkinter 는 표준 라이브러리이고 PyInstaller 가 **내장 훅**으로 tc
 **개발 PC 에서는 되고 어머니 PC 에서만 터진다** — 이 레포가 이미 두 번 겪은 실패다.
 드롭 수용은 tkinter 가 못 하므로 `dnd.py` 가 `ctypes` 로 OS 기본 DLL 만 써서 붙인다.
 
+## ★Tk 는 **메인 스레드에서만** 만진다
+
+`watchdog.run_process_file` 이 최대 30초 블로킹하므로 변환은 워커 스레드에서 돈다.
+예전에는 그 워커가 끝나면서 `root.winfo_exists()` 와 `root.after()` 를 **직접** 불렀는데,
+**tkinter 는 스레드 안전하지 않다.** 실기기에서는 그게 Tcl 패닉 → 프로세스 사망이었고
+(어머니 PC 에서 드롭하는 순간 앱이 죽었다), CI 에서는 조용히 콜백이 안 도는 것으로 나타났다.
+버튼 경로에서 안 드러난 이유는 저장·클립보드·탐색기를 **자식 프로세스**가 하기 때문이다 —
+창 글자만 안 바뀌고 사용자는 성공으로 본다.
+
+지금은 **어느 스레드에서도 Tk 를 만지지 않는다.** 드롭도 변환 결과도 큐에 넣고,
+메인 루프가 `poll()` 로 가져가 화면을 바꾼다. 큐는 스레드 안전하고 Tcl 과 무관하다.
+덕분에 WndProc 콜백도 Tcl 을 아예 안 건드린다(재진입 걱정도 같이 사라진다).
+
 ## 왜 변환을 스레드로 돌리나
 
 `watchdog.run_process_file` 은 최대 `DEFAULT_TIMEOUT_SECONDS`(30초) 동안 **블로킹**한다.
@@ -26,6 +39,7 @@ tkinter 는 표준 라이브러리이고 PyInstaller 가 **내장 훅**으로 tc
 테스트 수집이 통째로 깨진다).
 """
 
+import queue
 import threading
 from pathlib import Path
 
@@ -65,9 +79,13 @@ def _spawn_thread(job) -> None:
 class DropZoneController:
     """창의 상태 머신. Tk 를 모른다 — view 는 주입받는다.
 
-    view 규약: `set_status(text)` · `is_alive() -> bool` · `schedule(fn)`.
-    `schedule` 은 **메인 스레드에서** fn 을 실행해야 한다.
+    view 규약: `set_status(text)` · `is_alive() -> bool`.
+    ★**`set_status` 는 메인 스레드에서만 불린다** — `poll()` 안에서만 부르기 때문이다.
     """
+
+    #: 메인 루프가 큐를 확인하는 주기(ms). 사람이 못 느낄 만큼 짧고, 놀고 있을 때
+    #: CPU 를 안 쓸 만큼 길다.
+    POLL_INTERVAL_MS = 100
 
     def __init__(self, view, convert, spawn=None, describe_error=None):
         self._view = view
@@ -75,38 +93,73 @@ class DropZoneController:
         self._spawn = spawn or _spawn_thread
         self._describe_error = describe_error or (lambda exc: messages.UNEXPECTED)
         self._state = IDLE
+        self._inbox = queue.Queue()  # 드롭된 경로 (WndProc 에서 들어온다)
+        self._outbox = queue.Queue()  # (문구, 변환이 끝났나) (워커에서 들어온다)
 
     @property
     def state(self) -> str:
         return self._state
 
+    # --- 아무 스레드에서나 불러도 되는 것 (Tk 를 안 만진다) -------------------
+
+    def offer_paths(self, paths) -> None:
+        """드롭된 경로를 접수만 한다. **Win32 WndProc 콜백 안에서 불린다.**
+
+        여기서 Tk 를 만지면 Tcl 이 메시지 처리 도중 재진입한다. 큐에 넣기만 하고
+        실제 처리는 `poll()` 이 메인 스레드에서 한다.
+        """
+        self._inbox.put(list(paths))
+
+    def offer_notice(self, message: str) -> None:
+        """상태만 알린다 — 변환 상태는 안 건드린다."""
+        self._outbox.put((message, False))
+
+    # --- 메인 스레드 전용 ---------------------------------------------------
+
+    def poll(self) -> bool:
+        """메인 루프가 주기적으로 부른다. 큐를 비우고 화면을 갱신한다.
+
+        결과를 먼저 반영하고 그다음 새 드롭을 받는다 — 순서를 바꾸면 방금 시작한
+        변환의 "바꾸는 중…" 을 직전 결과가 덮어쓴다.
+        """
+        did_something = False
+
+        while True:
+            try:
+                message, finished = self._outbox.get_nowait()
+            except queue.Empty:
+                break
+            if finished:
+                self._state = IDLE
+            self._set_status(message)
+            did_something = True
+
+        while True:
+            try:
+                paths = self._inbox.get_nowait()
+            except queue.Empty:
+                break
+            self.handle_paths(paths)
+            did_something = True
+
+        return did_something
+
     def handle_paths(self, paths) -> None:
-        """드롭과 '파일 고르기' 버튼이 함께 쓰는 진입점."""
+        """드롭과 '파일 고르기' 버튼이 함께 쓰는 진입점. **메인 스레드에서만.**"""
         if self._state == PROCESSING:
             # 변환 중 추가 드롭은 받지 않는다. 받아 주면 한글 COM 을 동시에 두 번
             # 띄우게 되는데, 그건 이 프로그램이 한 번도 검증한 적 없는 상태다.
-            self._view.set_status(messages.BUSY)
+            self._set_status(messages.BUSY)
             return
 
         verdict, payload = classify_drop(paths)
         if verdict != ACCEPT:
-            self._view.set_status(payload)
+            self._set_status(payload)
             return
 
         self._state = PROCESSING
-        self._view.set_status(messages.CONVERTING)
+        self._set_status(messages.CONVERTING)
         self._spawn(lambda: self._work(payload))
-
-    def _work(self, hwp_path: str) -> None:
-        """워커 스레드에서 돈다. **여기서 예외가 새어나가면 아무도 못 본다.**"""
-        try:
-            out_path = self._convert(hwp_path)
-        except Hwp2ImgError as exc:
-            self._finish(exc.user_message)
-        except Exception as exc:
-            self._finish(self._describe_error(exc))
-        else:
-            self._finish(messages.done(out_path))
 
     def can_close(self) -> bool:
         """변환 중이면 창을 닫지 못하게 한다.
@@ -116,35 +169,30 @@ class DropZoneController:
         30초 안에 무조건 끝내므로 기다리는 시간은 유한하다 — 그동안 막는 편이 안전하다.
         """
         if self._state == PROCESSING:
-            self._view.set_status(messages.BUSY)
+            self._set_status(messages.BUSY)
             return False
         return True
 
-    def _finish(self, message: str) -> None:
-        """워커 스레드에서 불린다. **여기서 `IDLE` 로 되돌리면 안 된다.**
+    def _set_status(self, message: str) -> None:
+        if self._view.is_alive():
+            self._view.set_status(message)
 
-        `schedule` 은 다음 메인 루프 틱에 실행된다. 여기서 상태를 먼저 IDLE 로 찍으면
-        그 사이에 들어온 드롭이 받아들여지고, 뒤늦게 도착한 **이전 결과가 새 변환의
-        "바꾸는 중…" 을 덮어쓴다** — 어머니가 아직 변환 중인데 "다 됐어요" 를 본다
-        (cursor diff 리뷰 지적). 상태와 화면은 같은 틱에 같이 바뀌어야 한다.
+    # --- 워커 스레드 전용 (Tk 를 절대 만지지 않는다) -------------------------
+
+    def _work(self, hwp_path: str) -> None:
+        """워커 스레드에서 돈다. **여기서 예외가 새어나가면 아무도 못 본다.**
+
+        ★view 를 건드리지 않는다. 결과는 큐에만 넣는다 — tkinter 는 스레드 안전하지 않고,
+        예전에 여기서 `root.after()` 를 부르다 실기기에서 프로세스가 죽었다.
         """
-        if not self._view.is_alive():
-            self._state = IDLE  # 그릴 화면이 없다. 상태만 되돌린다
-            return
         try:
-            self._view.schedule(lambda: self._apply(message))
-        except Exception:
-            # 변환이 끝나는 순간 어머니가 창을 닫으면 메인 루프가 이미 없을 수 있다.
-            # 여기서도 되돌려야 창이 살아남은 경우에 영구히 막히지 않는다.
-            self._state = IDLE
-
-    def _apply(self, message: str) -> None:
-        """메인 스레드에서 불린다 — 상태와 화면이 여기서 함께 바뀐다."""
-        self._state = IDLE
-        # is_alive 검사와 실제 갱신 사이에 창이 닫힐 수 있어 한 번 더 본다.
-        if not self._view.is_alive():
-            return
-        self._view.set_status(message)
+            out_path = self._convert(hwp_path)
+        except Hwp2ImgError as exc:
+            self._outbox.put((exc.user_message, True))
+        except Exception as exc:
+            self._outbox.put((self._describe_error(exc), True))
+        else:
+            self._outbox.put((messages.done(out_path), True))
 
 
 class _TkView:
@@ -162,9 +210,6 @@ class _TkView:
             return bool(self._root.winfo_exists())
         except Exception:
             return False
-
-    def schedule(self, fn) -> None:
-        self._root.after(0, fn)
 
 
 def launch(convert, describe_error=None, drop_hook=None) -> int:
@@ -246,16 +291,9 @@ def _build_window(convert, describe_error=None, drop_hook=None, root=None):
 
     root.protocol("WM_DELETE_WINDOW", on_close)
 
-    def on_dropped(paths):
-        """`WM_DROPFILES` 콜백 **스택 안에서** 불린다.
-
-        그 자리에서 Tk 위젯을 만지면 Tcl 이 Windows 메시지 처리 도중 재진입한다
-        (cursor diff 리뷰 지적). 반드시 메인 루프로 넘긴 뒤에 만진다.
-        """
-        try:
-            root.after(0, lambda: controller.handle_paths(paths))
-        except Exception:
-            pass
+    # ★`WM_DROPFILES` 콜백은 Tcl 을 **아예 안 만진다.** 큐에 넣기만 하고
+    #   실제 처리는 아래 `pump()` 가 메인 루프에서 한다.
+    on_dropped = controller.offer_paths
 
     # 창이 실제로 만들어진 뒤에야 핸들이 생긴다.
     root.update_idletasks()
@@ -272,13 +310,20 @@ def _build_window(convert, describe_error=None, drop_hook=None, root=None):
 
     def on_drop_error(_exc):
         """드롭 처리가 터졌다. **조용히 넘어가면 무반응으로 보인다** — 버튼을 가리킨다."""
-        try:
-            root.after(0, lambda: view.set_status(messages.DROP_FAILED))
-        except Exception:
-            pass
+        controller.offer_notice(messages.DROP_FAILED)
 
     for hook, hwnd in hooks:
         hook.attach(hwnd, on_dropped, on_error=on_drop_error)
+
+    # ★펌프는 **배선의 일부**다. `launch()` 쪽에 두면 `_build_window` 로 만든 창은
+    #   큐가 영원히 안 비워진다 — 드롭해도 아무 일이 안 일어난다.
+    def pump():
+        """메인 루프가 큐를 비운다. 다른 스레드가 Tk 를 만지지 않게 하는 유일한 통로다."""
+        controller.poll()
+        if view.is_alive():
+            root.after(DropZoneController.POLL_INTERVAL_MS, pump)
+
+    root.after(DropZoneController.POLL_INTERVAL_MS, pump)
 
     return root, controller, hooks
 

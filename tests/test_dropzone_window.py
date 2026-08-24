@@ -116,6 +116,7 @@ def _settle(root, controller, timeout=5.0):
     while controller.state == dropzone.PROCESSING and time.monotonic() < deadline:
         if _window_is_open(root):
             root.update()
+        controller.poll()
         time.sleep(0.01)
     return controller.state
 
@@ -184,17 +185,33 @@ def test_status_text_really_changes_through_the_tk_view(window):
     assert any("한글 문서 파일" in t for t in _texts(root))
 
 
-def test_a_drop_from_the_hook_is_marshalled_onto_the_main_loop(window):
-    """드롭 콜백은 `WM_DROPFILES` 스택 안에서 불린다 — 그 자리에서 Tk 를 만지면
-    Tcl 이 재진입한다. `root.after` 로 넘어가는지 실제 메인 루프로 확인한다."""
-    root, _controller, hooks = window
+def test_a_drop_from_the_hook_never_touches_tk_until_the_main_loop_polls(window):
+    """드롭 콜백은 `WM_DROPFILES` 스택 안에서 불린다 — **거기서는 Tcl 을 아예 안 만진다.**
+    큐에 넣기만 하고, 메인 루프의 `poll()` 이 처리한다. 예전에는 여기서 Tk 를 만졌고
+    실기기에서 그것 때문에 프로세스가 죽었다."""
+    root, controller, hooks = window
     on_dropped = hooks[0][0].attached[0][1]
 
     on_dropped(["a.hwp", "b.hwp"])  # 두 개 → 거절 경로 (변환 안 뜬다)
-    assert not any(messages.TOO_MANY_FILES in t for t in _texts(root)), "즉시 실행됐다 — 마샬링 안 됨"
+    assert not any(messages.TOO_MANY_FILES in t for t in _texts(root)), "콜백이 곧바로 Tk 를 만졌다"
 
-    root.update()  # 여기서 after(0) 이 돈다
+    controller.poll()
+    root.update()
     assert any(messages.TOO_MANY_FILES in t for t in _texts(root))
+
+
+def test_the_pump_is_actually_scheduled_so_drops_get_processed(window):
+    """`poll()` 을 아무도 안 부르면 드롭이 영원히 큐에 남는다 — 배선을 고정한다."""
+    root, controller, hooks = window
+    hooks[0][0].attached[0][1]([r"C:\보고서 최종.pdf"])  # 거절되는 확장자
+
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        root.update()
+        if any("한글 문서 파일" in t for t in _texts(root)):
+            return
+        time.sleep(0.02)
+    raise AssertionError("메인 루프가 큐를 비우지 않았다 — pump 가 안 걸렸다")
 
 
 # --- 닫기 가로채기 ----------------------------------------------------------
