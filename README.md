@@ -5,6 +5,17 @@
 Windows 머신에서 이어서 작업한다면 **[docs/WINDOWS-HANDOFF.md](docs/WINDOWS-HANDOFF.md)를
 먼저 읽어라** — 지금 뭐가 끝났고 뭐가 안 끝났는지, 다음에 뭐부터 확인해야 하는지 정리돼 있다.
 
+## 받는 법
+
+[**Releases 페이지**](https://github.com/jellive/hwp2img/releases/latest)에서
+`한글-사진으로-바꾸기.exe` 를 받아 바탕화면에 두고, 이름을 **한글 사진으로 바꾸기** 로 바꾼다.
+
+⚠️ 받아서 실행하면 **"Windows에서 PC를 보호했습니다"** 파란 창이 뜬다. 고장이 아니라 이 exe 에
+코드 서명이 없어서다 — **[추가 정보] → [실행]**. 한 번 실행하면 다음부터는 안 뜬다.
+
+exe 는 태그를 밀 때 GitHub Actions 가 Windows 러너에서 빌드해 릴리즈에 붙인다
+(`.github/workflows/release.yml`). 손으로 빌드하는 방법은 아래 "Windows 실기기 빌드" 절에 남겨 뒀다.
+
 ## 사용법 (어머니용)
 
 두 가지 방법이 있고 결과는 같다.
@@ -66,6 +77,18 @@ Windows 머신에서 이어서 작업한다면 **[docs/WINDOWS-HANDOFF.md](docs/
   PyInstaller 부트로더가 실패한 전례가 있다. 한글 이름이 필요하면 빌드한 뒤
   `dist/hwp2img.exe` 를 가리키는 바탕화면 바로가기를 "한글 사진으로 바꾸기" 로 만들어 준다
   (또는 .exe 를 그 이름으로 복사한다).
+
+## 릴리즈 내는 법 (개발자용)
+
+    # 1) pyproject.toml 의 version 을 올린다  (태그와 다르면 워크플로가 멈춘다)
+    # 2) 커밋하고 푸시한 뒤
+    git tag v0.2.0 && git push origin v0.2.0
+
+Windows 러너가 테스트를 돌리고 → exe 를 빌드하고 → 릴리즈를 만들어 자산으로 붙인다.
+**테스트가 깨지거나 exe 가 안 나오면 릴리즈는 만들어지지 않는다.**
+
+⚠️ **CI 러너에는 한컴오피스가 없다.** 그래서 CI 가 검증하는 것은 COM 경계 **바깥**뿐이다 —
+실제 .hwp 변환은 여전히 실기기에서만 확인된다. 릴리즈 노트에도 그렇게 적힌다.
 
 ## 최초 1회 배포 체크리스트
 

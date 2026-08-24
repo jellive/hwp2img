@@ -1,0 +1,171 @@
+name: release
+
+# 태그를 밀면 Windows 에서 exe 를 빌드해 GitHub Release 에 붙인다.
+# 어머니에게는 링크 하나만 주면 된다.
+#
+# ★잡을 하나로 둔 것은 의도다. 태그가 가리키는 커밋의 테스트가 깨졌는데 릴리즈만
+#   독립적으로 공개되는 일을 막는다(크로스모델 지적) — 아래 순서에서 pytest 가
+#   빌드보다 먼저 오고, 릴리즈 생성은 **맨 마지막 한 스텝**이다.
+
+on:
+  push:
+    tags: ['v*']
+# ★workflow_dispatch 를 일부러 뺐다. 수동 실행에서는 GITHUB_REF_NAME 이 태그가 아니라
+#   브랜치명이라 아래 버전 대조가 **항상** 죽는다(cursor 리뷰 지적). 릴리즈는 태그에서만 난다.
+
+permissions:
+  contents: write  # 릴리즈 생성에 필요. 명시 안 하면 레포 설정에 따라 read-only 로 죽는다
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      # 태그와 pyproject 의 version 이 어긋난 채로 배포되면, 어머니가 받은 exe 가
+      # 무슨 버전인지 아무도 모르게 된다. 어긋나면 여기서 멈춘다.
+      - name: 태그와 pyproject version 대조
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          proj=$(python -c "import tomllib,pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+          echo "tag=$tag  pyproject=$proj"
+          if [ "$tag" != "$proj" ]; then
+            echo "::error::태그($tag)와 pyproject.toml version($proj)이 다르다. 둘을 맞추고 다시 태그해라."
+            exit 1
+          fi
+
+      - name: 의존성 설치
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: 무엇이 설치됐는지 기록
+        shell: bash
+        run: pip freeze | tee installed-packages.txt
+        # 자산으로 올리지 않고 릴리즈 노트 본문에 접어 넣는다 — 자산이 둘이면 두 번째
+        # 업로드가 실패해 "릴리즈는 있는데 자산이 반쪽" 인 상태가 남을 수 있다(cursor 지적).
+
+      # 테스트가 깨지면 exe 를 만들지 않는다.
+      - name: pytest
+        run: pytest -v
+
+      # ★이 프로젝트의 최대 미지수. `pyhwpx/core.py:66` 이 **import 시점에**
+      #   `win32.gencache.EnsureModule("{7D2B6F3C-…}", 0, 1, 0)` 을 try 없이 부른다(휠 실측).
+      #   그 GUID 는 한글 타입 라이브러리인데 러너에는 한컴오피스가 없다.
+      #   `--collect-all` 은 패키지를 **실제로 import** 해서 분석하므로 여기서 죽을 수 있다.
+      #
+      #   처음엔 "먼저 import 해 보고 형태를 고르는" 프로브를 뒀는데, `--hidden-import` 도
+      #   같은 이유로 죽을 수 있다는 지적을 받았다(cursor). 프로브가 맞혀도 빌드가 죽으면
+      #   소용이 없다. 그래서 **빌드 자체를 두 번 시도**한다 — 손으로 쓰던 명령을 먼저 쓰고,
+      #   그게 죽으면 import 하지 않는 형태로 간다. 어느 쪽으로 됐는지는 릴리즈 노트에 적힌다.
+      #   둘 다 죽으면 잡이 실패하고 릴리즈는 만들어지지 않는다.
+      - name: exe 빌드
+        id: build
+        shell: bash
+        run: |
+          set -uo pipefail
+          echo "::group::1차 시도 — --collect-all pyhwpx (README 의 그 명령)"
+          if pyinstaller --onefile --noconsole --collect-all pyhwpx --name "hwp2img" src/run.py; then
+            echo "::endgroup::"
+            echo "mode=collect-all (손으로 빌드하던 것과 동일)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "::endgroup::"
+          echo "::warning::--collect-all 빌드 실패 — 한컴오피스 부재로 pyhwpx import 가 죽은 것으로 본다. import 하지 않는 형태로 재시도한다."
+          rm -rf build dist
+          # --hidden-import 는 바이트코드 정적 분석이라 모듈 본문을 실행하지 않는 것이
+          # 원칙이지만, 이 역시 러너에서 확인된 적 없다. import 분석에 안 잡히는 것은
+          # dll 과 데이터 파일뿐이라 그 둘은 직접 복사한다 —
+          # security.py 가 sys._MEIPASS/pyhwpx 에서 dll 을 찾는다.
+          pkg=$(python -c "import os,importlib.util as u; print(os.path.dirname(u.find_spec('pyhwpx').origin))")
+          if [ -z "$pkg" ] || [ ! -f "$pkg/FilePathCheckerModule.dll" ]; then
+            echo "::error::pyhwpx 패키지 경로를 못 찾았거나 그 안에 dll 이 없다: '$pkg'"
+            exit 1
+          fi
+          echo "pyhwpx 패키지 경로: $pkg"
+          echo "::group::2차 시도 — --hidden-import + --add-data"
+          pyinstaller --onefile --noconsole \
+            --hidden-import pyhwpx \
+            --copy-metadata pyhwpx \
+            --add-data "$pkg/FilePathCheckerModule.dll;pyhwpx" \
+            --add-data "$pkg/fonts.json;pyhwpx" \
+            --name "hwp2img" src/run.py
+          rc=$?
+          echo "::endgroup::"
+          if [ $rc -ne 0 ]; then
+            echo "::error::두 형태 모두 빌드에 실패했다. 릴리즈를 만들지 않는다."
+            exit 1
+          fi
+          echo "mode=hidden-import + add-data (pyhwpx 를 import 하지 않는 형태 — **손으로 빌드하던 것과 다르다.** 실기기에서 보안 팝업이 안 뜨는지 꼭 확인할 것)" >> "$GITHUB_OUTPUT"
+
+      # 빌드가 조용히 빈 결과를 내는 것을 막는다. 크기 하한은 numpy·pandas·tcl/tk 가
+      # 들어간 onefile 기준으로 아주 보수적으로 잡았다 — 이보다 작으면 뭔가 빠진 것이다.
+      - name: 결과물 확인 + 해시
+        id: artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f dist/hwp2img.exe || { echo "::error::dist/hwp2img.exe 가 없다"; exit 1; }
+          size=$(stat -c%s dist/hwp2img.exe 2>/dev/null || stat -f%z dist/hwp2img.exe)
+          echo "exe 크기: $size bytes"
+          if [ "$size" -lt 5000000 ]; then
+            echo "::error::exe 가 ${size} bytes 로 비정상적으로 작다 — 번들이 빠진 것으로 본다"
+            exit 1
+          fi
+          # ★크기만 보면 dll 누락을 못 잡는다(cursor 지적). 이름을 직접 찾는다 —
+          #   PyInstaller onefile 은 번들 목록에 항목 이름을 평문으로 담는다.
+          #   이 dll 이 빠지면 개발 PC 에서는 되고 **어머니 PC 에서만 보안 팝업이 뜬다** —
+          #   이 레포가 실제로 겪은 실패다(커밋 25376ab).
+          if ! grep -qa "FilePathCheckerModule" dist/hwp2img.exe; then
+            echo "::error::번들에 FilePathCheckerModule.dll 이 없다 — 어머니 PC 에서 보안 팝업이 뜬다. 릴리즈를 만들지 않는다."
+            exit 1
+          fi
+          echo "FilePathCheckerModule.dll 번들 확인 OK"
+          sha=$(python -c "import hashlib,pathlib; print(hashlib.sha256(pathlib.Path('dist/hwp2img.exe').read_bytes()).hexdigest())")
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+          echo "size_mb=$(( size / 1048576 ))" >> "$GITHUB_OUTPUT"
+          # ★ASCII 이름으로 빌드하고 나서 복사한다. 비-ASCII --name 으로 직접 빌드하면
+          #   일부 Windows 환경에서 PyInstaller 부트로더가 실패한 전례가 있다(README).
+          #   공백 대신 하이픈 — 릴리즈 자산 URL 인코딩 사고를 피한다.
+          # 유니코드 파일명은 git-bash 로케일에 안 맡긴다 — python 이 확실하다.
+          python -c "import shutil; shutil.copy('dist/hwp2img.exe', 'dist/\uD55C\uAE00-\uC0AC\uC9C4\uC73C\uB85C-\uBC14\uAFB8\uAE30.exe')"
+
+      - name: 릴리즈 노트 작성
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 어머니용 안내는 .github/release-notes.md 에 있다. 여기(YAML 블록 스칼라)에
+          # heredoc 으로 넣으면 들여쓰기 때문에 파싱이 깨진다 — 실제로 한 번 깨졌다.
+          cp .github/release-notes.md RELEASE_NOTES.md
+          {
+            echo ""
+            echo "- 빌드 형태: \`${{ steps.build.outputs.mode }}\`"
+            echo "- exe 크기: 약 ${{ steps.artifact.outputs.size_mb }} MB"
+            echo "- SHA256: \`${{ steps.artifact.outputs.sha256 }}\`"
+            echo "- 빌드 러너: \`windows-latest\` · Python 3.11"
+            echo ""
+            echo "<details><summary>이 빌드에 실제로 들어간 패키지</summary>"
+            echo ""
+            echo '```'
+            cat installed-packages.txt
+            echo '```'
+            echo ""
+            echo "</details>"
+            echo ""
+            echo "⚠️ **이 exe 는 한컴오피스가 없는 러너에서 빌드됐다.** 즉 실제 .hwp 변환은"
+            echo "CI 가 검증하지 못한다 — COM 경계 바깥만 테스트된다. 실기기 확인이 여전히 필요하다."
+          } >> RELEASE_NOTES.md
+
+      # 릴리즈 생성은 **맨 마지막 한 스텝**이다. 앞이 하나라도 깨지면 릴리즈가 안 생긴다.
+      # fail_on_unmatched_files 로 exe 가 없는데 릴리즈만 만들어지는 것을 막는다.
+      - uses: softprops/action-gh-release@v2
+        with:
+          body_path: RELEASE_NOTES.md
+          fail_on_unmatched_files: true
+          files: dist/한글-사진으로-바꾸기.exe
