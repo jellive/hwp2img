@@ -235,6 +235,13 @@ package) + **코드 서명**이 필요한데 우리한테 없다. 상단 경로�
   **공백 든 파일만 조용히 실패**해서 재현 정보 없이 지원해야 하는 최악의 모양이 된다)
 - .hwp **더블클릭이 여전히 한글로 가는가.** 확장자 키의 기본값은 안 건드리지만 실기기 확인 필요.
 
+**smoke 워크플로가 메운 칸 (`workflow_dispatch`):** `current_exe()` 는 `sys.frozen` 에 걸려
+있는데 유닛 테스트는 그 플래그를 monkeypatch 로 흉내낼 뿐이다. smoke 는 **진짜 얼린 exe 를
+4번 띄운 뒤** 레지스트리를 직접 읽어 ①등록됐나 ②마지막 exe 경로를 가리키나(자가 치유)
+③`"%1"` 인용이 살아 있나 ④`.hwp` 기본값이 여전히 비었나 를 확인한다.
+같은 워크플로가 `dist/hwp2img.exe` 를 아티팩트로 올린다 — **릴리즈를 내지 않고** 실기기에서
+받아 볼 수 있다. Actions 탭 → smoke → Run workflow.
+
 **롤백:** `python -c "from hwp2img import shell_menu; shell_menu.unregister()"` — 또는
 `HKCU\Software\Classes` 에서 `hwp2img.convert`, `.hwp\OpenWithProgids\hwp2img.convert`,
 `SystemFileAssociations\.hwp(x)\shell\hwp2img` 를 지운다. 확장자 키 자체는 지우지 않는다.

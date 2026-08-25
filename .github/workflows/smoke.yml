@@ -79,3 +79,52 @@ jobs:
             exit 1
           }
           Write-Host "네 가지 이름 모두 정상 실행"
+
+      # `shell_menu.current_exe()` 는 `sys.frozen` 에 걸려 있다. 유닛 테스트는 그 플래그를
+      # monkeypatch 로 흉내낼 뿐이라 **진짜 얼린 exe 에서 등록되는지는 검증된 적이 없다.**
+      # 위에서 exe 를 실제로 띄웠으니 여기서 그 결과를 잰다.
+      - name: 얼린 exe 가 우클릭 메뉴를 실제로 등록했나
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cmdKey = 'HKCU:\Software\Classes\hwp2img.convert\shell\open\command'
+          if (-not (Test-Path $cmdKey)) {
+            Write-Host "::error::얼린 exe 를 4번 띄웠는데 $cmdKey 가 없다 — 등록이 아예 안 됐다"
+            exit 1
+          }
+          $command = (Get-ItemProperty -Path $cmdKey).'(default)'
+          Write-Host "command = $command"
+
+          # 마지막으로 띄운 이름을 가리켜야 한다 — exe 가 움직이면 따라오는 자가 치유.
+          if ($command -notlike '*hwp to img.exe*') {
+            Write-Host "::error::마지막으로 실행한 exe 를 안 가리킨다 (자가 치유 실패)"
+            exit 1
+          }
+          # `"%1"` 인용이 살아 있어야 한다. 빠지면 공백 든 파일명만 조용히 실패한다.
+          if ($command -notlike '* "%1"') {
+            Write-Host "::error::`%1` 인용이 빠졌다 — 공백 든 파일명이 깨진다"
+            exit 1
+          }
+
+          $progids = 'HKCU:\Software\Classes\.hwp\OpenWithProgids'
+          if (-not (Get-ItemProperty -Path $progids -Name 'hwp2img.convert' -ErrorAction SilentlyContinue)) {
+            Write-Host "::error::Win11 상단 경로(OpenWithProgids)에 등록이 안 됐다"
+            exit 1
+          }
+
+          # 어머니의 파일 연결을 가로채면 안 된다 — .hwp 기본값은 비어 있어야 한다.
+          $extDefault = (Get-ItemProperty -Path 'HKCU:\Software\Classes\.hwp' -ErrorAction SilentlyContinue).'(default)'
+          if ($extDefault) {
+            Write-Host "::error::.hwp 의 기본값을 썼다 ($extDefault) — 더블클릭이 한글로 안 간다"
+            exit 1
+          }
+          Write-Host "✅ 얼린 exe 가 두 경로에 등록했고, 파일 연결은 안 건드렸다"
+
+      # 릴리즈를 내지 않고 exe 를 받아 볼 수 있게 한다 — 실기기 확인용.
+      - name: exe 를 아티팩트로 올린다
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hwp2img-exe
+          path: dist/hwp2img.exe
+          if-no-files-found: error
