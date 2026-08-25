@@ -2,7 +2,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from hwp2img import hwp_to_pdf, messages, output, pdf_to_images, stitch, watchdog
+from hwp2img import hwp_to_pdf, messages, output, pdf_to_images, shell_menu, stitch, watchdog
 from hwp2img.errors import Hwp2ImgError, UnsupportedFileError
 
 SUPPORTED_EXTENSIONS = {".hwp", ".hwpx"}
@@ -39,6 +39,19 @@ def process_file(hwp_path: str, output_dir: str, hwp_factory, dpi: int = 200) ->
 
 
 def main(argv: list[str], launcher=None) -> int:
+    # 탐색기 우클릭 메뉴를 자가 등록·자가 치유한다. 설치 프로그램이 없어서 등록을 유지해 줄
+    # 주체가 없고, 바탕화면 exe 는 이름변경·이동·새 버전으로 경로가 쉽게 바뀐다.
+    #
+    # `watchdog` 이 띄우는 자식은 여기 안 온다 — `run.py` 의 `freeze_support()` 가 자식을
+    # worker 로 가로채므로 `main()` 은 부모에서만 돈다.
+    #
+    # 등록 실패는 변환을 막지 않는다. `ensure_registered` 는 예외를 안 던지지만, 그건 그
+    # 함수의 약속이지 이 자리의 보장이 아니다 — 여기서도 막는다.
+    try:
+        shell_menu.ensure_registered()
+    except Exception:
+        pass
+
     if not argv:
         # 아이콘을 더블클릭한 경우다. 예전에는 "이 프로그램 위로 끌어다 놓아 주세요"
         # 안내창만 띄우고 끝나는 막다른 길이었다 — 이제 드롭존 창을 띄운다.

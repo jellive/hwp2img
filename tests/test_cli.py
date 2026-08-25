@@ -356,3 +356,43 @@ def test_launch_dropzone_still_tells_the_user_when_the_window_itself_cannot_open
     # 원인은 로그로만 — 어머니에게 raw 예외를 보여주지 않는다
     assert "no tcl/tk" not in messages[0]
     assert "no tcl/tk" in (fake_home / "Desktop" / "hwp2img_오류.log").read_text(encoding="utf-8")
+
+
+# --- 우클릭 메뉴 자가 등록 -----------------------------------------------------
+#
+# 설치 프로그램이 없으므로 등록을 유지해 줄 주체가 없다. 실행할 때마다 스스로 고친다.
+# ("등록하려면 먼저 한 번 실행해야 한다"는 순환 조건은 이 배포에서는 이미 풀려 있다 —
+#  어머니는 이미 바탕화면 아이콘으로 쓰고 있고, 새 exe 로 한 번 변환하면 그때 메뉴가 생긴다.)
+
+
+def test_main_registers_the_context_menu_on_the_file_path(monkeypatch):
+    registered = []
+    monkeypatch.setattr(cli.shell_menu, "ensure_registered", lambda: registered.append(True))
+    monkeypatch.setattr(cli, "_run_conversion", lambda *args: "out.png")
+
+    cli.main(["a.hwp"])
+
+    assert registered == [True]
+
+
+def test_main_registers_the_context_menu_on_the_dropzone_path(monkeypatch):
+    registered = []
+    monkeypatch.setattr(cli.shell_menu, "ensure_registered", lambda: registered.append(True))
+
+    cli.main([], launcher=lambda: 0)
+
+    assert registered == [True]
+
+
+def test_a_broken_registry_never_stops_the_conversion(monkeypatch):
+    """메뉴 등록 실패는 변환보다 훨씬 덜 중요하다. 등록이 터져도 변환은 되어야 한다."""
+
+    def explode():
+        raise OSError("액세스가 거부되었습니다")
+
+    monkeypatch.setattr(cli.shell_menu, "ensure_registered", explode)
+    conversions = []
+    monkeypatch.setattr(cli, "_run_conversion", lambda *args: conversions.append(args) or "o.png")
+
+    assert cli.main(["a.hwp"]) == 0
+    assert len(conversions) == 1
