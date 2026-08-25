@@ -82,18 +82,40 @@ def _pump_until(root, done, timeout=10.0):
     return False
 
 
-@pytest.fixture
-def window():
+@pytest.fixture(scope="module")
+def tk_root():
+    """이 모듈 전체가 쓰는 **단 하나의** Tk root.
+
+    전에는 테스트마다 `tk.Tk()` 를 새로 만들고 부쉈다. Tk 는 그걸 반복하면 불안정하다 —
+    Windows 러너에서 `Can't find a usable init.tcl` 로 죽었다(2026-08-25 실측, 같은 코드가
+    직전 런에서는 통과했으므로 **간헐**이다). `test_dropzone_window.py` 는 이미 같은 이유로
+    이 패턴으로 고쳐져 있었는데 이 파일만 옛 패턴이 남아 있었다.
+
+    간헐 실패를 두면 다음의 **진짜** 실패가 "또 그거겠지"로 묻힌다. 그게 진짜 비용이다.
+    """
     try:
         root = tk.Tk()
     except tk.TclError as exc:
         pytest.skip(f"Tk 를 띄울 수 없다: {exc}")
     root.withdraw()
-    root.update_idletasks()
     yield root
     try:
         if root.winfo_exists():
             root.destroy()
+    except tk.TclError:
+        pass
+
+
+@pytest.fixture
+def window(tk_root):
+    """테스트 하나가 쓰는 창. root 가 아니라 Toplevel 이다."""
+    top = tk.Toplevel(tk_root)
+    top.withdraw()
+    top.update_idletasks()
+    yield top
+    try:
+        if top.winfo_exists():
+            top.destroy()
     except tk.TclError:
         pass
 
@@ -174,7 +196,7 @@ def test_other_messages_still_reach_the_original_window_procedure(window):
 # --- 드롭존 **전체 배선** (실기기에서 죽은 자리) ------------------------------
 
 
-def test_the_whole_dropzone_survives_a_real_drop(window):
+def test_the_whole_dropzone_survives_a_real_drop(tk_root):
     """지금까지의 테스트는 드롭 콜백이 `list.append` 였다 — **Tk 를 안 만진다.**
 
     실기기는 창이 뜨고 나서 **드롭하는 순간 죽었다.** 그 경로는 여기부터다:
@@ -189,6 +211,7 @@ def test_the_whole_dropzone_survives_a_real_drop(window):
     root, controller, hooks = dropzone._build_window(
         convert=lambda path: (converted.append(path), path + "_변환.png")[1],
         drop_hook=None,  # ★진짜 Win32DropHook 을 쓴다
+        root=tk.Toplevel(tk_root),
     )
     try:
         root.withdraw()
@@ -222,7 +245,7 @@ def test_the_whole_dropzone_survives_a_real_drop(window):
             pass
 
 
-def test_a_drop_still_works_when_the_window_is_the_only_hook_target(window):
+def test_a_drop_still_works_when_the_window_is_the_only_hook_target(tk_root):
     """`_drop_target_handles` 가 후보를 두 개 돌려주면 같은 창에 훅이 둘 붙는다.
     그 상태에서도 드롭이 한 번만 처리돼야 한다(두 번 변환하면 안 된다)."""
     from hwp2img import dropzone
@@ -231,6 +254,7 @@ def test_a_drop_still_works_when_the_window_is_the_only_hook_target(window):
     root, controller, hooks = dropzone._build_window(
         convert=lambda path: (calls.append(path), "out.png")[1],
         drop_hook=None,
+        root=tk.Toplevel(tk_root),
     )
     try:
         root.withdraw()
