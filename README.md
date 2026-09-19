@@ -2,8 +2,9 @@
 
 어머니가 받은 한글(.hwp) 문서를 카카오톡으로 바로 보낼 수 있는 이미지로 바꿔주는 프로그램.
 
-Windows 머신에서 이어서 작업한다면 **[docs/WINDOWS-HANDOFF.md](docs/WINDOWS-HANDOFF.md)를
-먼저 읽어라** — 지금 뭐가 끝났고 뭐가 안 끝났는지, 다음에 뭐부터 확인해야 하는지 정리돼 있다.
+Windows 머신에서 **실기기 검증**을 한다면 **[docs/WINDOWS-CHECKLIST.md](docs/WINDOWS-CHECKLIST.md)**
+하나만 읽으면 된다 — 준비물·빌드·13항목·통과 기준·실패 시 처치가 다 있다.
+왜 그 항목이 생겼는지와 지금까지의 이력은 **[docs/WINDOWS-HANDOFF.md](docs/WINDOWS-HANDOFF.md)** 에 있다.
 
 ## 받는 법
 
